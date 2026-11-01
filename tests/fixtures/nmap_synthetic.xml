@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<!-- SYNTHETIC TEST FIXTURE: origin=sample, created for Cipher-Lens Day 1 testing -->
+<nmaprun scanner="nmap" args="nmap -sV -p 80,443 -oX - 10.0.0.5" start="1700000000" version="7.94">
+  <host starttime="1700000000" endtime="1700000010">
+    <status state="up" reason="syn-ack"/>
+    <address addr="10.0.0.5" addrtype="ipv4"/>
+    <hostnames>
+      <hostname name="lab-target.local" type="user"/>
+    </hostnames>
+    <ports>
+      <port protocol="tcp" portid="80">
+        <state state="open" reason="syn-ack"/>
+        <service name="http" product="Apache httpd" version="2.4.49" method="probed" conf="10">
+          <cpe>cpe:/a:apache:http_server:2.4.49</cpe>
+        </service>
+        <script id="http-vuln-cve2021-41773" output="VULNERABLE: Path traversal and RCE in Apache HTTP Server 2.4.49. CVE-2021-41773. State: VULNERABLE"/>
+      </port>
+      <port protocol="tcp" portid="443">
+        <state state="open" reason="syn-ack"/>
+        <service name="https" product="Apache httpd" version="2.4.49" tunnel="ssl" method="probed" conf="10"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>

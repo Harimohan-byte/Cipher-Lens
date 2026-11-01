@@ -1,0 +1,37 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Local runtime data & databases
+local_data/
+*.db
+*.sqlite*
+reports/
+evidence/
+raw_scans/
+
+# Tool outputs (except synthetic fixtures under tests/fixtures and samples/)
+*.nessus
+*.zap
+*.har
+*.pcap
+*.log
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
