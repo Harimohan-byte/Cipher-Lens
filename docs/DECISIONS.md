@@ -11,6 +11,12 @@ Every decision that changes how we build goes here with a date and a reason. New
 | 2026-11-02 | CI (`.github/workflows/ci.yml`, job `test`) runs ruff and offline pytest only; it never scans and uses no secrets | Plan section 4.1 |
 | 2026-11-02 | Authorization reference for the local practice target: "self-hosted practice target" | Plan section 5.1 |
 | 2026-11-02 | Integrations as in plan section 1: live = Nmap, Nikto, ZAP; import-only = Nessus, OpenVAS/Greenbone, Burp; manual = Metasploit | Honest and achievable |
+| 2026-11-02 | Audit log hash chaining detects row edits, middle deletions, and reordering; `expected_head_hash` anchor protects against tail tampering | Security & tamper-evidence transparency |
+| 2026-11-02 | EventPublisher allows broad `except Exception` only inside subscriber execution so subscriber failures never break committed audit transactions | Isolation of audit storage from presentation/pub-sub |
+| 2026-11-02 | PolicyGate fails closed on DNS resolution: all resolved IPs must be in-scope, and exclusions beat allows | Prevents DNS rebinding and out-of-scope scanning |
+| 2026-11-02 | Scope with `allowed_ports` requires an authorized port; port=None is rejected to prevent unrestricted port scanning | Boundary enforcement |
+| 2026-11-02 | Credentials in target URLs are redacted prior to audit logging | Zero plain-text credentials in logs (AGENTS.md rule 9) |
+| 2026-11-02 | Approval decisions are final and immutable; a rejected step cannot be updated in-place (a new step must be proposed) | Human-in-the-loop integrity and auditability |
 
 ## Open items to fill in
 - Gemini free-tier model IDs and limits (requests per minute, tokens per minute, requests per day) from AI Studio, plan section 4.2.
