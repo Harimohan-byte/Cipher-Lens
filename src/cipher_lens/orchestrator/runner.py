@@ -1,7 +1,8 @@
 # DECISION: Subprocesses are executed exclusively with argv lists via asyncio.create_subprocess_exec; shell=True is never permitted.
-# DECISION: Timeouts terminate the entire process group (POSIX: killpg, Windows: taskkill /F /T /PID) to prevent orphan scanner processes.
-# DECISION: Every tool run must be authorized by PolicyGate and approved by ApprovalManager before any process is spawned.
-# DECISION: All raw stdout/stderr output is saved directly into ArtifactStore with SHA-256 tracking.
+# DECISION: Timeouts and task cancellations terminate the entire process group (POSIX: killpg, Windows: taskkill /F /T /PID) to prevent orphan scanner processes.
+# DECISION: Every tool run must be authorized by PolicyGate and approved by ApprovalManager before any process is spawned (fail-closed unless allow_ungated=True).
+# DECISION: All raw stdout and stderr output is saved into ArtifactStore with SHA-256 tracking. When both streams are non-empty, they are preserved in a delimited combined format.
+# DECISION: Sensitive CLI flag arguments and URLs in argv are redacted before audit storage to satisfy AGENTS.md Rule 9.
 """Subprocess runner and execution coordinator under policy and approval gates."""
 
 import asyncio
@@ -23,6 +24,46 @@ from cipher_lens.policy.approvals import ApprovalManager
 from cipher_lens.policy.gate import PolicyGate, redact_target
 from cipher_lens.store.artifacts import ArtifactStore
 from cipher_lens.store.audit import AuditLog
+
+_SENSITIVE_FLAGS = {
+    "-p",
+    "--password",
+    "-a",
+    "--api-key",
+    "--apikey",
+    "--token",
+    "--secret",
+    "--auth",
+    "-u",
+    "--user",
+}
+
+
+def redact_argv(argv: list[str]) -> list[str]:
+    """Redacts credentials and sensitive flag values from command-line arguments."""
+    redacted: list[str] = []
+    skip_next = False
+    for arg in argv:
+        if skip_next:
+            redacted.append("<redacted>")
+            skip_next = False
+            continue
+
+        lower_arg = arg.lower()
+        if lower_arg in _SENSITIVE_FLAGS:
+            redacted.append(arg)
+            skip_next = True
+            continue
+
+        if "=" in arg:
+            prefix, sep, _ = arg.partition("=")
+            if prefix.lower() in _SENSITIVE_FLAGS:
+                redacted.append(f"{prefix}{sep}<redacted>")
+                continue
+
+        redacted.append(redact_target(arg))
+
+    return redacted
 
 
 class RunnerError(Exception):
@@ -108,13 +149,26 @@ class ToolRunner:
         audit_log: AuditLog | None = None,
         rate_limiter: RateLimiter | None = None,
         default_timeout: float = 300.0,
+        allow_ungated: bool = False,
     ) -> None:
+        if not allow_ungated and (policy_gate is None or approval_manager is None):
+            missing = []
+            if policy_gate is None:
+                missing.append("policy_gate")
+            if approval_manager is None:
+                missing.append("approval_manager")
+            raise ValueError(
+                f"ToolRunner requires {', '.join(missing)} for safe execution. "
+                "Explicitly set allow_ungated=True if running unchaperoned tests."
+            )
+
         self.artifact_store = artifact_store
         self.policy_gate = policy_gate
         self.approval_manager = approval_manager
         self.audit_log = audit_log
         self.rate_limiter = rate_limiter
         self.default_timeout = default_timeout
+        self.allow_ungated = allow_ungated
 
     async def execute(
         self,
@@ -184,8 +238,11 @@ class ToolRunner:
                 "tool": step.tool,
                 "target": redact_target(step.target),
                 "action_class": step.action_class.value,
-                "argv": argv,
+                "argv": redact_argv(argv),
                 "timeout_seconds": timeout,
+                "ungated": self.allow_ungated and (
+                    self.policy_gate is None or self.approval_manager is None
+                ),
             },
             assessment_id=assessment_id,
         )
@@ -196,6 +253,7 @@ class ToolRunner:
         stdout_bytes = b""
         stderr_bytes = b""
         exit_code: int | None = None
+        proc: asyncio.subprocess.Process | None = None
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -208,18 +266,41 @@ class ToolRunner:
             )
 
             try:
-                async with asyncio.timeout(timeout):
-                    stdout_bytes, stderr_bytes = await proc.communicate()
-            except TimeoutError:
-                timed_out = True
-                await _kill_process_tree(proc)
                 try:
-                    async with asyncio.timeout(2.0):
+                    async with asyncio.timeout(timeout):
                         stdout_bytes, stderr_bytes = await proc.communicate()
-                except (TimeoutError, Exception):
-                    stdout_bytes, stderr_bytes = b"", b""
+                except TimeoutError:
+                    timed_out = True
+                    await _kill_process_tree(proc)
+                    try:
+                        async with asyncio.timeout(2.0):
+                            stdout_bytes, stderr_bytes = await proc.communicate()
+                    except Exception:
+                        stdout_bytes, stderr_bytes = b"", b""
+            finally:
+                if proc.returncode is None:
+                    await _kill_process_tree(proc)
 
             exit_code = proc.returncode
+
+        except asyncio.CancelledError:
+            if proc is not None and proc.returncode is None:
+                await _kill_process_tree(proc)
+            duration = round(time.perf_counter() - start_time, 3)
+            self._audit(
+                actor="runner",
+                event_type="tool_run_failed",
+                payload={
+                    "run_id": run_id,
+                    "step_id": step.step_id,
+                    "tool": step.tool,
+                    "status": "cancelled",
+                    "error": "Execution was cancelled",
+                    "duration_seconds": duration,
+                },
+                assessment_id=assessment_id,
+            )
+            raise
 
         except Exception as exc:
             duration = round(time.perf_counter() - start_time, 3)
@@ -266,8 +347,14 @@ class ToolRunner:
         else:
             status = "failed"
 
-        # Raw tool output: primary is stdout; if empty, preserve stderr
-        raw_output = stdout_bytes if stdout_bytes else stderr_bytes
+        # Raw tool output: preserve both stdout and stderr verbatim (AGENTS.md Rule 8)
+        if stdout_bytes and stderr_bytes:
+            raw_output = b"--- STDOUT ---\n" + stdout_bytes + b"\n--- STDERR ---\n" + stderr_bytes
+        elif stdout_bytes:
+            raw_output = stdout_bytes
+        else:
+            raw_output = stderr_bytes
+
         ext = "xml" if raw_output.startswith(b"<?xml") else "txt"
         artifact_meta = self.artifact_store.save_raw(
             content=raw_output,
@@ -310,7 +397,6 @@ class ToolRunner:
         adapter: BaseAdapter,
         step: PlanStep,
         *,
-        argv: list[str] | None = None,
         assessment_id: str | None = None,
         timeout_seconds: float | None = None,
     ) -> ExecutionResult:
@@ -320,11 +406,17 @@ class ToolRunner:
                 f"Adapter '{adapter.name}' is import-only and cannot be executed live."
             )
 
-        # Use explicitly provided argv or ask adapter to build argv
-        effective_argv = argv
-        if effective_argv is None and hasattr(adapter, "build_argv"):
-            effective_argv = adapter.build_argv(step)
+        if step.tool != adapter.name:
+            raise ValueError(
+                f"PlanStep tool '{step.tool}' does not match adapter name '{adapter.name}'"
+            )
 
+        if not hasattr(adapter, "build_argv"):
+            raise ValueError(
+                f"Adapter '{adapter.name}' does not implement build_argv(step)"
+            )
+
+        effective_argv = adapter.build_argv(step)
         if not effective_argv:
             raise ValueError(
                 f"Adapter '{adapter.name}' did not produce an argv list for step '{step.step_id}'"
