@@ -30,6 +30,7 @@ Every decision that changes how we build goes here with a date and a reason. New
 | 2026-11-03 | NVD lookups use CVE API 2.0 strictly for tool-reported CVEs with validated regex; CISA KEV and EPSS cached in SQLite with TTL; offline mode uses local snapshots; failures return enrichment_unavailable without guessing scores | AGENTS.md Rule 3 & Master Plan A7: prevents vulnerability metric fabrication |
 | 2026-11-03 | Assessment, PlanStep, StepRun, Finding, Evidence, and Approval entities are persisted in SQLite with relational foreign keys and JSON columns for complex nested attributes; AssessmentRepository provides crash recovery (reset_interrupted_steps) and resumption (resume_assessment) | AGENTS.md Rule 7, 8 & Master Plan A8: state persistence and crash recovery across process restarts |
 | 2026-11-03 | PDF reports are generated using pure-Python ReportLab with a two-pass NumberedCanvas (computing total pages, running headers/footers), structured into six required sections and three appendices, strictly segregating direct evidence from AI inference | AGENTS.md Rule 4 & Master Plan A9, §10: deterministic, offline report generation without fabricating data |
+| 2026-11-03 | KevCatalog uses snapshot mtime for freshness, treats default sample as unrefreshed to require remote sync in live mode, limits failed refresh retries via cooldown, and reconciles KEV status on live cache hits | AGENTS.md Rule 3 & Master Plan A7: prevents stale/missing KEV flags from persisting in cache |
 
 
 ## Open items to fill in
