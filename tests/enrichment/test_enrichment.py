@@ -13,6 +13,8 @@ Invariants tested:
 """
 
 import json
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -241,10 +243,10 @@ async def test_enrichment_service_cache_hit_avoids_network(tmp_path: Path):
         nonlocal network_calls
         network_calls += 1
         url_str = str(request.url)
-        if "cve" in url_str:
-            return httpx.Response(200, json=SAMPLE_NVD_CVE_2021_41773)
         if "epss" in url_str:
             return httpx.Response(200, json=SAMPLE_EPSS_RESPONSE)
+        if "cve" in url_str:
+            return httpx.Response(200, json=SAMPLE_NVD_CVE_2021_41773)
         return httpx.Response(404)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -280,10 +282,10 @@ async def test_corrupt_cache_entry_purged_as_cache_miss(tmp_path: Path):
 
     def handler(request: httpx.Request) -> httpx.Response:
         url_str = str(request.url)
-        if "cve" in url_str:
-            return httpx.Response(200, json=SAMPLE_NVD_CVE_2021_41773)
         if "epss" in url_str:
             return httpx.Response(200, json=SAMPLE_EPSS_RESPONSE)
+        if "cve" in url_str:
+            return httpx.Response(200, json=SAMPLE_NVD_CVE_2021_41773)
         return httpx.Response(404)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -372,3 +374,119 @@ async def test_invalid_cve_format_rejected(tmp_path: Path):
 
     with pytest.raises(ValueError, match="Invalid CVE ID format"):
         await service.enrich_cve("CVE-2021-1234; DROP TABLE")
+
+
+@pytest.mark.asyncio
+async def test_default_sample_not_treated_as_fresh_live_catalog():
+    """Default sample snapshot must not be treated as a fresh live catalog."""
+    kev = KevCatalog()  # loads default sample
+    assert kev._is_default_sample is True
+    assert kev.refreshed_at is None
+
+    remote_called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal remote_called
+        remote_called = True
+        return httpx.Response(200, json=SAMPLE_KEV_CATALOG)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await kev.ensure_fresh(client=client)
+
+    assert remote_called is True
+    assert kev.refreshed_at is not None
+    assert kev._is_default_sample is False
+
+
+@pytest.mark.asyncio
+async def test_kev_refresh_cooldown_limits_retries_on_failure():
+    """When remote refresh fails, retry cooldown prevents hammering CISA on every lookup."""
+    kev = KevCatalog(retry_delay_seconds=300.0)
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("CISA feed unavailable")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    # First attempt: attempts and fails
+    await kev.ensure_fresh(client=client)
+    assert attempts == 1
+    assert kev._last_refresh_attempt > 0
+
+    # Immediate second attempt: cooldown suppresses retry
+    await kev.ensure_fresh(client=client)
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_kev_fields_on_live_cache_hit(tmp_path: Path):
+    """When a cached entry has old KEV status, a live cache hit reconciles it with the catalog."""
+    cache = SqliteTtlCache(db_path=tmp_path / "cache.db")
+    # Pre-populate cache with cisa_kev=False
+    cache.set(
+        "CVE-2021-41773",
+        {
+            "cve_id": "CVE-2021-41773",
+            "cvss": {"score": 7.5, "version": "3.1", "source": "nvd"},
+            "cisa_kev": False,
+            "cisa_kev_due_date": None,
+            "status": "enriched",
+            "source": "nvd_kev_epss",
+            "fetched_at": datetime.now(UTC).isoformat(),
+        },
+        ttl_seconds=3600.0,
+    )
+
+    snapshot_path = tmp_path / "cisa_kev.json"
+    snapshot_path.write_text(json.dumps(SAMPLE_KEV_CATALOG), encoding="utf-8")
+    kev = KevCatalog(snapshot_path=snapshot_path)
+    assert kev.is_known_exploited("CVE-2021-41773") is True
+
+    # Empty handler: zero network calls expected because it's a cache hit
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Network must not be called on cache hit")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    service = EnrichmentService(cache=cache, client=client, kev_catalog=kev)
+
+    res = await service.enrich_cve("CVE-2021-41773")
+    # Reconciled to True!
+    assert res.cisa_kev is True
+    assert res.cisa_kev_due_date == "2021-11-17"
+
+    # Cache should also be updated
+    updated_cache = cache.get("CVE-2021-41773")
+    assert updated_cache is not None
+    assert updated_cache["cisa_kev"] is True
+
+
+@pytest.mark.asyncio
+async def test_old_snapshot_freshness_preserved_from_mtime(tmp_path: Path):
+    """A snapshot written in the past preserves its mtime and triggers refresh if stale."""
+    import os
+
+    snapshot_path = tmp_path / "cisa_kev.json"
+    snapshot_path.write_text(json.dumps(SAMPLE_KEV_CATALOG), encoding="utf-8")
+    # Set modification time to 2 days ago
+    two_days_ago = time.time() - (2 * 86400.0)
+    os.utime(snapshot_path, (two_days_ago, two_days_ago))
+
+    kev = KevCatalog(snapshot_path=snapshot_path)
+    assert kev.refreshed_at is not None
+    assert kev.refreshed_at < time.time() - 86400.0
+
+    refreshed = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal refreshed
+        refreshed = True
+        return httpx.Response(200, json=SAMPLE_KEV_CATALOG)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await kev.ensure_fresh(client=client, max_age_seconds=86400.0)
+
+    assert refreshed is True
+

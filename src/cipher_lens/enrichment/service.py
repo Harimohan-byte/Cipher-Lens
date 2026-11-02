@@ -70,10 +70,32 @@ class EnrichmentService:
 
         # 1. Check TTL Cache (Live mode only; offline lookups never read from or write to the live cache)
         if not self.offline_mode:
+            await self.kev_catalog.ensure_fresh(self.client)
             cached_dict = self.cache.get(clean_cve)
             if cached_dict is not None:
                 try:
-                    return CveEnrichment.model_validate(cached_dict)
+                    enrichment = CveEnrichment.model_validate(cached_dict)
+                    # Reconcile KEV fields on live cache hits against current catalog
+                    current_kev = self.kev_catalog.is_known_exploited(clean_cve)
+                    current_due = self.kev_catalog.get_due_date(clean_cve)
+                    if (
+                        enrichment.cisa_kev != current_kev
+                        or enrichment.cisa_kev_due_date != current_due
+                    ):
+                        new_status = "enriched" if current_kev else enrichment.status
+                        enrichment = enrichment.model_copy(
+                            update={
+                                "cisa_kev": current_kev,
+                                "cisa_kev_due_date": current_due,
+                                "status": new_status,
+                            }
+                        )
+                        self.cache.set(
+                            clean_cve,
+                            enrichment.model_dump(mode="json"),
+                            ttl_seconds=self.cache_ttl_seconds,
+                        )
+                    return enrichment
                 except Exception:
                     self.cache.delete(clean_cve)
 
@@ -121,8 +143,7 @@ class EnrichmentService:
                 fetched_at=now,
             )
 
-        # 3. Live Mode (Ensure KEV is fresh, then query NVD and EPSS)
-        await self.kev_catalog.ensure_fresh(self.client)
+        # 3. Live Mode (Query NVD and EPSS)
         is_kev = self.kev_catalog.is_known_exploited(clean_cve)
         due_date = self.kev_catalog.get_due_date(clean_cve)
 

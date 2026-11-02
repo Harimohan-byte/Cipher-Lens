@@ -613,7 +613,7 @@ Legend: DONE = files exist, tests pass, red-flag scan clean. PARTIAL = some piec
 | Shared: contracts freeze | A+B | DONE | PR #7 merged; models and interfaces frozen |
 | A5 runner/executor | A | DONE | orchestrator/runner.py, RateLimiter, ToolRunner, process group kill on timeout, policy & approval gating, audit lifecycle events (15 tests) |
 | A6 ZAP adapter | A | DONE | adapters/zap.py, httpx client, spider/passive/active workflow, bounded context regex, active scan gated by ApprovalManager, alerts JSON artifact, parser (7 tests) |
-| A7 enrichment | A | DONE | enrichment/: nvd.py, kev.py, epss.py, cache.py, service.py, CveEnrichment model, TTL caching, offline snapshots, unknown CVE not-found handling, CodeRabbit review fixes (12 tests) |
+| A7 enrichment | A | DONE | enrichment/: nvd.py, kev.py, epss.py, cache.py, service.py, CveEnrichment model, TTL caching, offline snapshots, unknown CVE not-found handling, CodeRabbit review fixes (16 tests) |
 | A8 persistence | A | DONE | store/repository.py, store/tables.py, models/assessment.py: SQLite repository for assessments, steps, runs, findings, evidence, approvals; resume-from-DB and crash recovery (7 tests) |
 | A9 PDF skeleton | A | DONE | reports/: models.py, canvas.py, generator.py: ReportLab PDF skeleton with 6 required sections, severity chart, numbered canvas, appendices, empty/failure edge cases (5 tests) |
 
