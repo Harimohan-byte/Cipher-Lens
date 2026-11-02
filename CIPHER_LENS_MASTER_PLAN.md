@@ -6,7 +6,7 @@
 **Operating rule:** authorized targets only. Local practice targets while developing; the organizer lab for the final demo. Never scan public, third-party, or unapproved systems.
 <!-- EDIT 1: replace the first four header lines (Project ... Operating rule) with: -->
 **Version:** v2.1 (status and git workflow added in §16; sections 1-15 unchanged except where marked)
-**Status as of 2 Nov 2026:** Day 1 in progress. See §16.2 for the live tracker.
+**Status as of 3 Nov 2026:** Day 1 COMPLETE. Day 2 in progress (A5 implemented). See §16.2 for the live tracker.
 
 ---
 
@@ -609,8 +609,9 @@ Legend: DONE = files exist, tests pass, red-flag scan clean. PARTIAL = some piec
 | B4 Nmap parser spike | B | DONE | adapters/nmap.py, tests/fixtures/nmap_synthetic.xml, golden parse test, XXE rejection test. 2 tests |
 | B5 scan machine + practice target | B | UNKNOWN | Manual. Record tool versions in docs/RUNBOOK.md |
 | Shared: DECISIONS.md | A+B | DONE | Updated with A1-A4 architectural decisions in docs/DECISIONS.md |
-| Shared: vertical slice | A+B | TODO | scope -> stub plan -> synthetic Nmap -> finding -> audit event |
-| Shared: contracts freeze | A+B | TODO | After A reads and approves models/ |
+| Shared: vertical slice | A+B | DONE | `tests/test_vertical_slice.py` pipeline test passed in PR #7 |
+| Shared: contracts freeze | A+B | DONE | PR #7 merged; models and interfaces frozen |
+| A5 runner/executor | A | DONE | orchestrator/runner.py, RateLimiter, ToolRunner, process group kill on timeout, policy & approval gating, audit lifecycle events (10 tests) |
 
 ### 16.3 Git working agreement
 Rules
@@ -677,10 +678,10 @@ Person B:
 Shared: A reviews `models/` and both freeze contracts; run the vertical slice (scope -> stub plan -> synthetic Nmap -> finding -> audit event); finish `docs/DECISIONS.md`.
 
 **Day 1 gate**
-- [x] Both can clone, create a venv, and run `pytest` green (A: yes, 64 tests; B: unverified)
+- [x] Both can clone, create a venv, and run `pytest` green (A: 83 tests; B: verified in PR #7)
 - [x] Unregistered target refused before any adapter runs (A3: tested and verified)
-- [ ] One synthetic finding reaches the audit trail (A2 + vertical slice)
-- [ ] Contracts frozen (after A's review of `models/`)
+- [x] One synthetic finding reaches the audit trail (PR #7 vertical slice + A2)
+- [x] Contracts frozen (PR #7 merged; models and interfaces frozen)
 
 ### 16.5 Decisions to record in docs/DECISIONS.md
 - Python 3.12 on all machines; ruff target py312.
