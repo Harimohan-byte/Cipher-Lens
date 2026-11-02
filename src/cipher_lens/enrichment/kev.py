@@ -2,11 +2,16 @@
 """CISA Known Exploited Vulnerabilities (KEV) catalog checker."""
 
 import json
+import logging
+import time
 from pathlib import Path
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+DEFAULT_SNAPSHOT_PATH = Path("samples/cisa_kev_sample.json")
 
 
 class KevCatalog:
@@ -16,9 +21,16 @@ class KevCatalog:
         self,
         snapshot_path: Path | str | None = None,
     ) -> None:
-        self.snapshot_path = Path(snapshot_path) if snapshot_path else None
+        if snapshot_path is not None:
+            self.snapshot_path = Path(snapshot_path)
+        elif DEFAULT_SNAPSHOT_PATH.exists():
+            self.snapshot_path = DEFAULT_SNAPSHOT_PATH
+        else:
+            self.snapshot_path = None
+
         self._kev_set: set[str] = set()
         self._due_dates: dict[str, str] = {}
+        self._loaded_at: float | None = None
         self._load_snapshot()
 
     def _load_snapshot(self) -> None:
@@ -31,8 +43,11 @@ class KevCatalog:
                         self._kev_set.add(cve)
                         if "dueDate" in vuln:
                             self._due_dates[cve] = vuln["dueDate"]
-            except Exception:
-                pass
+                self._loaded_at = time.time()
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "Failed to load CISA KEV snapshot from %s: %s", self.snapshot_path, exc
+                )
 
     async def refresh_remote(self, client: httpx.AsyncClient | None = None) -> bool:
         """Refreshes the catalog from the official CISA feed."""
@@ -52,17 +67,34 @@ class KevCatalog:
                         new_dates[cve] = vuln["dueDate"]
             self._kev_set = new_set
             self._due_dates = new_dates
+            self._loaded_at = time.time()
 
             # Save snapshot if path provided
             if self.snapshot_path:
                 self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
                 self.snapshot_path.write_text(json.dumps(data), encoding="utf-8")
             return True
-        except Exception:
+        except Exception as exc:
+            logger.warning("Remote CISA KEV refresh failed: %s", exc)
             return False
         finally:
             if should_close:
                 await http_client.aclose()
+
+    async def ensure_fresh(
+        self,
+        client: httpx.AsyncClient | None = None,
+        max_age_seconds: float = 86400.0,
+    ) -> None:
+        """Refreshes the catalog if not yet loaded or stale."""
+        now = time.time()
+        if self._loaded_at is None or (now - self._loaded_at) > max_age_seconds:
+            await self.refresh_remote(client)
+
+    @property
+    def is_empty(self) -> bool:
+        """Returns True if the catalog has no indexed vulnerabilities."""
+        return len(self._kev_set) == 0
 
     def is_known_exploited(self, cve_id: str) -> bool:
         """Returns True if the CVE is in CISA KEV."""
@@ -71,3 +103,4 @@ class KevCatalog:
     def get_due_date(self, cve_id: str) -> str | None:
         """Returns the CISA remediation due date if present."""
         return self._due_dates.get(cve_id.upper())
+

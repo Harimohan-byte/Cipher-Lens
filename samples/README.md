@@ -13,6 +13,7 @@ This directory contains **synthetic, sanitized sample files** for testing and do
 | --- | --- | --- | --- |
 | `nmap_sample.xml` | Nmap | synthetic | Golden parse fixture, argv builder reference |
 | `nikto_sample.xml` | Nikto | synthetic | Golden parse fixture, web finding reference |
+| `cisa_kev_sample.json` | CISA KEV | sample | Synthetic snapshot for offline exploitability enrichment |
 
 ## Labeling Convention
 

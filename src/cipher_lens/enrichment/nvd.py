@@ -33,17 +33,15 @@ async def fetch_nvd_cve(
     Never invents scores or descriptions; returns None if CVE is not indexed by NVD.
     """
     key = api_key or os.environ.get("CIPHER_LENS_NVD_API_KEY")
-    headers = {}
-    if key:
-        headers["apiKey"] = key
+    headers = {"apiKey": key} if key else {}
 
-    url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
+    url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
     should_close = client is None
-    http_client = client or httpx.AsyncClient(timeout=timeout, headers=headers)
+    http_client = client or httpx.AsyncClient(timeout=timeout)
 
     try:
-        resp = await http_client.get(url)
+        resp = await http_client.get(url, params={"cveId": cve_id}, headers=headers)
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -77,34 +75,27 @@ async def fetch_nvd_cve(
             if val.startswith("CWE-") and val not in cwe_ids:
                 cwe_ids.append(val)
 
-    # Extract CVSS (prefer v3.1, then v3.0, then v2.0)
+    # Extract CVSS (prefer v3.1, then v3.0, then v2.0; do not fabricate baseScore 0.0)
     cvss_info: CvssInfo | None = None
     metrics = cve_data.get("metrics", {})
 
-    if "cvssMetricV31" in metrics and metrics["cvssMetricV31"]:
-        v31 = metrics["cvssMetricV31"][0].get("cvssData", {})
-        cvss_info = CvssInfo(
-            score=float(v31.get("baseScore", 0.0)),
-            version=str(v31.get("version", "3.1")),
-            vector=v31.get("vectorString"),
-            source="nvd",
-        )
-    elif "cvssMetricV30" in metrics and metrics["cvssMetricV30"]:
-        v30 = metrics["cvssMetricV30"][0].get("cvssData", {})
-        cvss_info = CvssInfo(
-            score=float(v30.get("baseScore", 0.0)),
-            version=str(v30.get("version", "3.0")),
-            vector=v30.get("vectorString"),
-            source="nvd",
-        )
-    elif "cvssMetricV2" in metrics and metrics["cvssMetricV2"]:
-        v2 = metrics["cvssMetricV2"][0].get("cvssData", {})
-        cvss_info = CvssInfo(
-            score=float(v2.get("baseScore", 0.0)),
-            version=str(v2.get("version", "2.0")),
-            vector=v2.get("vectorString"),
-            source="nvd",
-        )
+    for metric_key, default_ver in (
+        ("cvssMetricV31", "3.1"),
+        ("cvssMetricV30", "3.0"),
+        ("cvssMetricV2", "2.0"),
+    ):
+        if metric_key in metrics and metrics[metric_key]:
+            metric_data = metrics[metric_key][0].get("cvssData", {})
+            base_score = metric_data.get("baseScore")
+            if base_score is not None:
+                version = str(metric_data.get("version", default_ver))
+                cvss_info = CvssInfo(
+                    score=float(base_score),
+                    version=version,
+                    vector=metric_data.get("vectorString"),
+                    source="nvd",
+                )
+                break
 
     return NvdRecord(
         cve_id=cve_id,

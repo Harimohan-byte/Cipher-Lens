@@ -2,17 +2,17 @@
 
 Invariants tested:
 1. NVD lookups only for valid tool-reported CVE IDs (AGENTS.md Rule 3).
-2. Never fabricate CVSS scores, vectors, or descriptions (AGENTS.md Rule 3).
+2. Never fabricate CVSS scores, vectors, or descriptions (AGENTS.md Rule 3). Missing baseScore does not become 0.0.
 3. Cache in SQLite with TTL; cache hits avoid network requests.
-4. Offline mode uses local snapshots exclusively without outbound network calls.
+4. Offline mode uses local snapshots exclusively without outbound network calls, and never poisons the live cache.
 5. Unknown CVE returns status='not_found', never guesses scores.
 6. API failures/timeouts return status='enrichment_unavailable' (Rule 13).
 7. CISA KEV detection sets cisa_kev=True for known exploited vulnerabilities.
 8. EPSS returns score and percentile.
+9. Stale/corrupt cache entries fail safe as cache misses and are purged.
 """
 
 import json
-import time
 from pathlib import Path
 
 import httpx
@@ -63,6 +63,28 @@ SAMPLE_NVD_CVE_2021_41773 = {
     ]
 }
 
+SAMPLE_NVD_CVE_NO_SCORE = {
+    "vulnerabilities": [
+        {
+            "cve": {
+                "id": "CVE-2021-99999",
+                "descriptions": [{"lang": "en", "value": "Under analysis"}],
+                "metrics": {
+                    "cvssMetricV31": [
+                        {
+                            "cvssData": {
+                                "version": "3.1",
+                                "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+                                # Missing baseScore entirely
+                            }
+                        }
+                    ]
+                },
+            }
+        }
+    ]
+}
+
 SAMPLE_EPSS_RESPONSE = {
     "status": "OK",
     "status-code": 200,
@@ -105,33 +127,39 @@ SAMPLE_KEV_CATALOG = {
 
 
 def test_sqlite_ttl_cache(tmp_path: Path):
-    """TTL Cache stores values, returns cache hits, and expires stale entries."""
+    """TTL Cache stores values, returns cache hits, and expires stale entries deterministically."""
     db_path = tmp_path / "cache.db"
     cache = SqliteTtlCache(db_path=db_path)
 
-    cache.set("test_key", {"foo": "bar"}, ttl_seconds=1.0)
+    cache.set("test_key", {"foo": "bar"}, ttl_seconds=3600.0)
     hit = cache.get("test_key")
     assert hit == {"foo": "bar"}
 
     # Non-existent key returns None
     assert cache.get("missing_key") is None
 
-    # Wait for expiration
-    time.sleep(1.1)
-    expired = cache.get("test_key")
-    assert expired is None
+    # Immediate expiry using negative TTL (no time.sleep needed)
+    cache.set("expired_key", {"foo": "old"}, ttl_seconds=-1.0)
+    assert cache.get("expired_key") is None
 
 
 @pytest.mark.asyncio
 async def test_nvd_fetch_successful():
-    """NVD client parses CVSS v3.1, score, vector, CWE, and description."""
+    """NVD client parses CVSS v3.1, score, vector, CWE, and description; passes apiKey header and params."""
+    received_params = {}
+    received_headers = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert "cveId=CVE-2021-41773" in str(request.url)
+        nonlocal received_params, received_headers
+        received_params = dict(request.url.params)
+        received_headers = dict(request.headers)
         return httpx.Response(200, json=SAMPLE_NVD_CVE_2021_41773)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    record = await fetch_nvd_cve("CVE-2021-41773", client=client)
+    record = await fetch_nvd_cve("CVE-2021-41773", client=client, api_key="test_api_key_123")
+
+    assert received_params.get("cveId") == "CVE-2021-41773"
+    assert received_headers.get("apikey") == "test_api_key_123"
 
     assert record is not None
     assert record.cvss is not None
@@ -140,6 +168,21 @@ async def test_nvd_fetch_successful():
     assert record.cvss.source == "nvd"
     assert "CWE-22" in record.cwe_ids
     assert "Apache HTTP Server" in (record.description or "")
+
+
+@pytest.mark.asyncio
+async def test_nvd_missing_base_score_does_not_default_to_zero():
+    """Safety: When NVD response lacks baseScore, never default to 0.0 (Rule 3)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=SAMPLE_NVD_CVE_NO_SCORE)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    record = await fetch_nvd_cve("CVE-2021-99999", client=client)
+
+    assert record is not None
+    # cvss must be None, NOT score=0.0
+    assert record.cvss is None
 
 
 @pytest.mark.asyncio
@@ -178,6 +221,16 @@ def test_cisa_kev_membership(tmp_path: Path):
     assert catalog.is_known_exploited("CVE-2099-9999") is False
 
 
+def test_corrupt_kev_snapshot_handled_gracefully(tmp_path: Path):
+    """Corrupt snapshot does not crash; logs warning and marks catalog empty."""
+    snapshot_path = tmp_path / "corrupt_kev.json"
+    snapshot_path.write_text("INVALID JSON DATA {{{", encoding="utf-8")
+
+    catalog = KevCatalog(snapshot_path=snapshot_path)
+    assert catalog.is_empty is True
+    assert catalog.is_known_exploited("CVE-2021-41773") is False
+
+
 @pytest.mark.asyncio
 async def test_enrichment_service_cache_hit_avoids_network(tmp_path: Path):
     """EnrichmentService caches completed lookups and avoids redundant network calls."""
@@ -188,7 +241,7 @@ async def test_enrichment_service_cache_hit_avoids_network(tmp_path: Path):
         nonlocal network_calls
         network_calls += 1
         url_str = str(request.url)
-        if "cveId=" in url_str:
+        if "cve" in url_str:
             return httpx.Response(200, json=SAMPLE_NVD_CVE_2021_41773)
         if "epss" in url_str:
             return httpx.Response(200, json=SAMPLE_EPSS_RESPONSE)
@@ -219,21 +272,47 @@ async def test_enrichment_service_cache_hit_avoids_network(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_enrichment_service_offline_mode_uses_snapshots(tmp_path: Path):
-    """In offline mode, external network calls are blocked and snapshots are used."""
+async def test_corrupt_cache_entry_purged_as_cache_miss(tmp_path: Path):
+    """If a cached entry has an invalid schema, it is treated as a miss and purged."""
     cache = SqliteTtlCache(db_path=tmp_path / "cache.db")
+    # Write invalid data under CVE key
+    cache.set("CVE-2021-41773", {"invalid_schema_field": 12345}, ttl_seconds=3600.0)
 
-    # Client that raises if any network call is attempted
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("Network calls forbidden in offline mode")
+        url_str = str(request.url)
+        if "cve" in url_str:
+            return httpx.Response(200, json=SAMPLE_NVD_CVE_2021_41773)
+        if "epss" in url_str:
+            return httpx.Response(200, json=SAMPLE_EPSS_RESPONSE)
+        return httpx.Response(404)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
     snapshot_path = tmp_path / "cisa_kev.json"
     snapshot_path.write_text(json.dumps(SAMPLE_KEV_CATALOG), encoding="utf-8")
     kev = KevCatalog(snapshot_path=snapshot_path)
 
-    # Provide local snapshot file for CVE
+    service = EnrichmentService(cache=cache, client=client, kev_catalog=kev)
+    res = await service.enrich_cve("CVE-2021-41773")
+
+    # Handled cleanly without raising ValidationError
+    assert res.status == "enriched"
+    assert res.cvss is not None
+    assert res.cvss.score == 7.5
+
+
+@pytest.mark.asyncio
+async def test_enrichment_service_offline_mode_does_not_poison_live_cache(tmp_path: Path):
+    """In offline mode, local snapshots are used and live cache is never poisoned."""
+    cache = SqliteTtlCache(db_path=tmp_path / "cache.db")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Network calls forbidden in offline mode")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    snapshot_path = tmp_path / "cisa_kev.json"
+    snapshot_path.write_text(json.dumps(SAMPLE_KEV_CATALOG), encoding="utf-8")
+    kev = KevCatalog(snapshot_path=snapshot_path)
+
     snapshots_dir = tmp_path / "cve_snapshots"
     snapshots_dir.mkdir()
     (snapshots_dir / "CVE-2021-41773.json").write_text(
@@ -261,6 +340,9 @@ async def test_enrichment_service_offline_mode_uses_snapshots(tmp_path: Path):
     assert res.cisa_kev is True
     assert res.cvss is not None
     assert res.cvss.score == 7.5
+
+    # Live cache MUST NOT have been populated with offline data
+    assert cache.get("CVE-2021-41773") is None
 
 
 @pytest.mark.asyncio

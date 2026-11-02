@@ -68,14 +68,18 @@ class EnrichmentService:
         if not CVE_REGEX.match(clean_cve):
             raise ValueError(f"Invalid CVE ID format: '{cve_id}'")
 
-        # 1. Check TTL Cache
-        cached_dict = self.cache.get(clean_cve)
-        if cached_dict is not None:
-            return CveEnrichment.model_validate(cached_dict)
+        # 1. Check TTL Cache (Live mode only; offline lookups never read from or write to the live cache)
+        if not self.offline_mode:
+            cached_dict = self.cache.get(clean_cve)
+            if cached_dict is not None:
+                try:
+                    return CveEnrichment.model_validate(cached_dict)
+                except Exception:
+                    self.cache.delete(clean_cve)
 
         now = datetime.now(UTC)
 
-        # 2. Offline Mode
+        # 2. Offline Mode (Strictly reads from local snapshots, never poisons the live cache)
         if self.offline_mode:
             is_kev = self.kev_catalog.is_known_exploited(clean_cve)
             due_date = self.kev_catalog.get_due_date(clean_cve)
@@ -91,7 +95,7 @@ class EnrichmentService:
                             if snap_data.get("cvss")
                             else None
                         )
-                        result = CveEnrichment(
+                        return CveEnrichment(
                             cve_id=clean_cve,
                             cvss=cvss_obj,
                             cwe_ids=snap_data.get("cwe_ids", []),
@@ -104,13 +108,11 @@ class EnrichmentService:
                             source="offline_snapshot",
                             fetched_at=now,
                         )
-                        self.cache.set(clean_cve, result.model_dump(mode="json"), ttl_seconds=self.cache_ttl_seconds)
-                        return result
                     except Exception:
                         pass
 
-            # If not in snapshot, return not_found
-            result = CveEnrichment(
+            # If not in snapshot, return not_found without caching
+            return CveEnrichment(
                 cve_id=clean_cve,
                 cisa_kev=is_kev,
                 cisa_kev_due_date=due_date,
@@ -118,10 +120,9 @@ class EnrichmentService:
                 source="offline_catalog",
                 fetched_at=now,
             )
-            self.cache.set(clean_cve, result.model_dump(mode="json"), ttl_seconds=3600.0)
-            return result
 
-        # 3. Live Mode (Query KEV, NVD, and EPSS)
+        # 3. Live Mode (Ensure KEV is fresh, then query NVD and EPSS)
+        await self.kev_catalog.ensure_fresh(self.client)
         is_kev = self.kev_catalog.is_known_exploited(clean_cve)
         due_date = self.kev_catalog.get_due_date(clean_cve)
 
