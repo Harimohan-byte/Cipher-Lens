@@ -588,9 +588,9 @@ Gemini model IDs, free-tier limits, and data terms; Streamlit auto-refresh/fragm
 
 ### 16.1 Verified facts
 - Repo: https://github.com/Harimohan-byte/Cipher-Lens. Owner and Person A: Harimohan-byte. Person B commits as bhavyaa3-cyber.
-- Default branch: `main`, at commit `3ecfa2c` ("bootstrap project foundation and Person B contracts, artifacts, and Nmap parser spike"). Old branch `feat/b-day1-contracts` is being deleted.
+- Default branch: `main`. Tasks A1, A2, and A3 merged to main. Task A4 implemented on `feat/a-approvals`.
 - Verified on A's machine (Python 3.12 venv): `pip install -r requirements.txt` OK; `pip install -e .` OK;
-  `python -m pytest -q` -> **13 passed**; `ruff check src tests` -> clean.
+  `python -m pytest -q` -> **64 passed**; `ruff check src tests` -> clean.
 - Red-flag scan on `src/` and `tests/`: no `shell=True`, no bare `except:`, no `skip`/`xfail`; `defusedxml` used in `adapters/nmap.py`.
 - Not yet verified: B's machine, B5 scan machine, A's review of `models/findings.py` and `models/plan.py`.
 
@@ -599,16 +599,16 @@ Legend: DONE = files exist, tests pass, red-flag scan clean. PARTIAL = some piec
 
 | Task | Owner | Status | Detail |
 |---|---|---|---|
-| A1 repo/tooling | A | PARTIAL | DONE: .gitignore, .gitattributes, .env.example, AGENTS.md, GEMINI.md, .cursor/rules/cipher-lens.mdc, pyproject.toml (setuptools, src layout, ruff, pytest pythonpath=src), requirements.txt, README.md, `main` default. TODO: CI workflow, master plan in repo, docs/DECISIONS.md, egg-info ignore, pinned versions, add CI as required check once it has run |
-| A2 audit log | A | TODO | store/db.py, tables.py, audit.py, `verify_chain()` |
-| A3 scope + gate | A | TODO | policy/ folder does not exist yet. Highest priority |
-| A4 approvals | A | TODO | policy/approvals.py, builds on models/approvals.py (ApprovalRequest, ApprovalDecision) |
+| A1 repo/tooling | A | DONE | .gitignore, .gitattributes, .env.example, AGENTS.md, GEMINI.md, .cursor/rules, pyproject.toml, requirements.txt, requirements-lock.txt, README.md, .github/workflows/ci.yml, CIPHER_LENS_MASTER_PLAN.md, docs/DECISIONS.md (PR #1 merged) |
+| A2 audit log | A | DONE | store/db.py, tables.py, audit.py, `verify_chain()`, append-only triggers, publisher (PR #2 merged) |
+| A3 scope + gate | A | DONE | policy/scope.py, gate.py, action_classes.py, DNS resolution safety, userinfo redaction, port rules, timezones (PR #3, #4 merged) |
+| A4 approvals | A | DONE | policy/approvals.py, ApprovalManager, finality, idempotency, per-step and plan approval gates (feat/a-approvals) |
 | B1 contracts | B | DONE, A review pending | models/: approvals, findings, observations, plan. 5 tests incl. "finding requires evidence" and "evidence and inference strictly separated" |
 | B2 artifact store | B | DONE | store/artifacts.py: SHA-256, tamper detection, locator format. 3 tests |
 | B3 adapter base | B | DONE | adapters/base.py: AdapterStatus, HealthResult, ExecutionResult, ExecutionContext, BaseAdapter; import-only adapters reject `run`. 3 tests |
 | B4 Nmap parser spike | B | DONE | adapters/nmap.py, tests/fixtures/nmap_synthetic.xml, golden parse test, XXE rejection test. 2 tests |
 | B5 scan machine + practice target | B | UNKNOWN | Manual. Record tool versions in docs/RUNBOOK.md |
-| Shared: DECISIONS.md | A+B | TODO | See §16.5 for seed content |
+| Shared: DECISIONS.md | A+B | DONE | Updated with A1-A4 architectural decisions in docs/DECISIONS.md |
 | Shared: vertical slice | A+B | TODO | scope -> stub plan -> synthetic Nmap -> finding -> audit event |
 | Shared: contracts freeze | A+B | TODO | After A reads and approves models/ |
 
@@ -677,8 +677,8 @@ Person B:
 Shared: A reviews `models/` and both freeze contracts; run the vertical slice (scope -> stub plan -> synthetic Nmap -> finding -> audit event); finish `docs/DECISIONS.md`.
 
 **Day 1 gate**
-- [ ] Both can clone, create a venv, and run `pytest` green (A: yes; B: unverified)
-- [ ] Unregistered target refused before any adapter runs (A3)
+- [x] Both can clone, create a venv, and run `pytest` green (A: yes, 64 tests; B: unverified)
+- [x] Unregistered target refused before any adapter runs (A3: tested and verified)
 - [ ] One synthetic finding reaches the audit trail (A2 + vertical slice)
 - [ ] Contracts frozen (after A's review of `models/`)
 
