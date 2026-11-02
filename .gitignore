@@ -35,3 +35,8 @@ Thumbs.db
 !.vscode/settings.json
 !.vscode/extensions.json
 .idea/
+
+# Packaging artifacts
+*.egg-info/
+build/
+dist/
