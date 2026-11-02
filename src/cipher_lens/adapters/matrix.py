@@ -91,3 +91,19 @@ def render_markdown(matrix: list[dict]) -> str:
         f"`{len(matrix)}` adapters healthy._"
     )
     return "\n".join(lines)
+
+
+def main() -> None:
+    """Print the generated markdown matrix to standard output."""
+    import sys
+
+    # Avoid encoding errors on Windows terminal with UTF-8 stream output
+    output = render_markdown(build_matrix())
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    print(output)
+
+
+if __name__ == "__main__":
+    main()
+

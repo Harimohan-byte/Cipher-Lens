@@ -71,13 +71,13 @@ class NmapParams(BaseModel):
     @field_validator("scripts")
     @classmethod
     def validate_scripts(cls, scripts: list[str]) -> list[str]:
-        for s in scripts:
-            clean_s = s.strip()
+        cleaned = [s.strip() for s in scripts]
+        for clean_s in cleaned:
             if clean_s not in ALLOWED_NSE_SCRIPTS:
                 raise ValueError(
                     f"Disallowed NSE script '{clean_s}'. Allowed scripts: {sorted(ALLOWED_NSE_SCRIPTS)}"
                 )
-        return scripts
+        return cleaned
 
 
 def build_nmap_argv(

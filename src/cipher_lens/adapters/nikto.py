@@ -8,9 +8,11 @@ Design decisions:
 - DECISION: Parser uses defusedxml exclusively (AGENTS.md Rule 6).
 """
 
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
@@ -53,6 +55,7 @@ class NiktoParams(BaseModel):
 
 def build_nikto_argv(
     params: NiktoParams,
+    output_file: str | None = None,
     binary_path: str = "nikto",
 ) -> list[str]:
     """Constructs a deterministic argv list for Nikto execution.
@@ -61,14 +64,14 @@ def build_nikto_argv(
     1. Never uses shell=True or string-formatted command lines.
     2. Always outputs XML (-Format xml) for defusedxml parsing.
     3. Always non-interactive (-nointeractive) to prevent TTY prompts.
-    4. Output written to stdout (-output -) so it can be captured directly.
+    4. Writes XML to specified output_file or fallback path.
     """
     argv = [
         binary_path,
         "-host", params.target,
         "-port", str(params.port),
         "-Format", "xml",
-        "-output", "-",
+        "-output", output_file or "-",
         "-nointeractive",
     ]
     if params.ssl:
@@ -194,7 +197,11 @@ class NiktoAdapter(BaseAdapter):
             params_dict["target"] = step.target
         params = NiktoParams(**params_dict)
 
-        argv = build_nikto_argv(params)
+        # Create temporary file for Nikto XML report output
+        with tempfile.NamedTemporaryFile(prefix="nikto_out_", suffix=".xml", delete=False) as tmp_f:
+            tmp_xml_path = tmp_f.name
+
+        argv = build_nikto_argv(params, output_file=tmp_xml_path)
 
         start_time = time.perf_counter()
         try:
@@ -208,10 +215,21 @@ class NiktoAdapter(BaseAdapter):
             )
             duration = time.perf_counter() - start_time
 
+            # Nikto writes the XML report to the specified file; fallback to proc.stdout if file is empty
+            xml_content = ""
+            if os.path.exists(tmp_xml_path):
+                try:
+                    with open(tmp_xml_path, encoding="utf-8", errors="replace") as f:
+                        xml_content = f.read()
+                except OSError:
+                    pass
+
+            content_to_save = xml_content or proc.stdout
+
             artifact_id = None
-            if proc.stdout:
+            if content_to_save:
                 meta = ctx.artifact_store.save_raw(
-                    content=proc.stdout,
+                    content=content_to_save,
                     source_tool=self.name,
                     run_id=step.step_id,
                     extension="xml",
@@ -249,6 +267,12 @@ class NiktoAdapter(BaseAdapter):
                 duration_seconds=duration,
                 artifact_id=None,
             )
+        finally:
+            if os.path.exists(tmp_xml_path):
+                try:
+                    os.remove(tmp_xml_path)
+                except OSError:
+                    pass
 
     def parse(self, raw_bytes: bytes, evidence_meta: Evidence) -> list[RawFinding]:
         """Parses Nikto XML output into RawFindings."""

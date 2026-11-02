@@ -135,7 +135,10 @@ def test_nmap_adapter_run_mocked(tmp_path, monkeypatch):
     assert result.status == "succeeded"
     assert result.exit_code == 0
     assert result.artifact_id is not None
-    assert store.verify(result.artifact_id, store.get_path(result.artifact_id).name.split(".")[0]) or True
+
+    import hashlib
+    expected_hash = hashlib.sha256(sample_xml).hexdigest()
+    assert store.verify(result.artifact_id, expected_hash)
 
     # Verify saved artifact contains our sample XML
     raw_content = store.read_raw(result.artifact_id)

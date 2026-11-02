@@ -8,7 +8,7 @@
 | `nikto` | `nikto` | healthy/unavailable (runtime) | web | Web server vulnerability scanner. Produces suspected-confidence findings. Alone, never yields confirmed status. |
 
 > [!NOTE]
-> This file shows the static structure. Run `python -m cipher_lens.adapters.matrix` to regenerate with live binary detection.
+> This file shows the static structure. Run `PYTHONPATH=src python -m cipher_lens.adapters.matrix` to regenerate with live binary detection.
 
 ## Adapter Safety Constraints
 
@@ -23,3 +23,4 @@
 - All XML output is parsed with `defusedxml` to prevent XXE (AGENTS.md Rule 6).
 - Every tool run requires `policy.authorize()` (AGENTS.md Rule 2).
 - Nikto findings always have `confidence="medium"` — correlation layer decides promotion (AGENTS.md Rule 4).
+
