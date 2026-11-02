@@ -114,13 +114,21 @@ For development and CI, always use the synthetic fixture. Do not run live scans 
 nmap -sV -p 3000 --script=http-title -oX /tmp/nmap_lab.xml 127.0.0.1
 ```
 
-Then import into Cipher-Lens:
+Then import into Cipher-Lens (from the repository root):
 ```python
+from pathlib import Path
 from cipher_lens.store.artifacts import ArtifactStore
+
 store = ArtifactStore()
-with open("/tmp/nmap_lab.xml", "rb") as f:
+
+# Note: If running Python on the Windows host, access the WSL file via UNC path, e.g.:
+# scan_path = Path(r"\\wsl$\Ubuntu\tmp\nmap_lab.xml")
+# Or if running inside WSL2 directly:
+scan_path = Path("/tmp/nmap_lab.xml")
+
+with open(scan_path, "rb") as f:
     meta = store.save_raw(f.read(), source_tool="nmap", run_id="run-001", extension="xml")
-print(meta.sha256_hash)
+print(f"Artifact saved: {meta.artifact_id} (SHA-256: {meta.sha256_hash})")
 ```
 
 ---
@@ -192,3 +200,4 @@ init_db(conn)
 - [ ] `GEMINI_API_KEY` set in `.env` (obtain from Google AI Studio)
 - [ ] `NVD_API_KEY` set in `.env` (obtain from nvd.nist.gov)
 - [ ] Practice target scope registered with `allowed_targets=["127.0.0.1"]`
+

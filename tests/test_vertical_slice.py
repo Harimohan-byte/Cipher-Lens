@@ -20,7 +20,7 @@ from cipher_lens.adapters.nmap import NmapAdapter
 from cipher_lens.models.findings import Evidence, RawFinding
 from cipher_lens.models.observations import Observation
 from cipher_lens.models.plan import ActionClass, PlanStep
-from cipher_lens.policy.approvals import ApprovalManager
+from cipher_lens.policy.approvals import ApprovalManager, ApprovalRequiredError
 from cipher_lens.policy.gate import PolicyGate
 from cipher_lens.policy.scope import Scope, ScopeRegistry
 from cipher_lens.store.artifacts import ArtifactStore
@@ -50,7 +50,7 @@ def make_scope(target_ip: str = "10.0.0.5") -> Scope:
         authorization_reference="AUTHORIZED-LAB-SELF-HOSTED-PRACTICE-TARGET",
         allowed_targets=[target_ip],
         exclusions=[],
-        allowed_ports=[],          # empty = all ports allowed per scope spec
+        allowed_ports=[],  # empty = all ports allowed per scope spec
         tool_allowlist=["nmap"],
         valid_from=now - timedelta(hours=1),
         valid_to=now + timedelta(hours=8),
@@ -70,7 +70,7 @@ def make_step(target: str = "10.0.0.5") -> PlanStep:
     )
 
 
-SYNTHETIC_NMAP_PATH = Path("tests/fixtures/nmap_synthetic.xml")
+SYNTHETIC_NMAP_PATH = Path(__file__).parent / "fixtures" / "nmap_synthetic.xml"
 
 
 # ---------------------------------------------------------------------------
@@ -164,19 +164,8 @@ class TestDay1VerticalSlice:
             "Parser must extract CVE-2021-41773 from synthetic fixture"
         )
 
-        # 6. Record every key event to the audit log
-        self.audit_log.append(
-            actor="policy_gate",
-            event_type="scope_authorization",
-            payload={
-                "target": step.target,
-                "tool": step.tool,
-                "action_class": step.action_class.value,
-                "rule_id": decision.rule_id,
-                "allowed": decision.allowed,
-            },
-            assessment_id=self.assessment_id,
-        )
+        # 6. Record artifact and finding events to the audit log
+        # (Note: PolicyGate.authorize() and ApprovalManager already appended their events)
         self.audit_log.append(
             actor="artifact_store",
             event_type="raw_artifact_saved",
@@ -227,14 +216,22 @@ class TestDay1VerticalSlice:
         assert not decision.allowed, "Gate must deny out-of-scope target"
         assert "8.8.8.8" in decision.reason or "NOT_IN_SCOPE" in decision.rule_id
 
+        # Verify the denial event was written to the audit log
+        cursor = self.audit_log.conn.cursor()
+        cursor.execute(
+            "SELECT payload FROM audit_log WHERE event_type = 'policy_decision' ORDER BY id DESC LIMIT 1"
+        )
+        last_event = cursor.fetchone()
+        assert last_event is not None
+        assert '"allowed":false' in last_event[0]
+        assert "8.8.8.8" in last_event[0]
+
         # Chain must still be intact after a denied decision
         verification = self.audit_log.verify_chain()
         assert verification.ok
 
     def test_unapproved_plan_blocks_discovery_step(self):
         """Safety: A DISCOVERY step against a fresh unapproved assessment is blocked."""
-        from cipher_lens.policy.approvals import ApprovalRequiredError
-
         # New assessment with no plan approval
         unapproved_manager = ApprovalManager(audit_log=self.audit_log)
         step = make_step()
@@ -266,8 +263,6 @@ class TestDay1VerticalSlice:
         The trigger fires before any row modification, so even a privileged
         SQL UPDATE cannot alter a committed audit record.
         """
-        import sqlite3 as _sqlite3
-
         self.audit_log.append(
             actor="test",
             event_type="test_event",
@@ -277,9 +272,9 @@ class TestDay1VerticalSlice:
 
         # Attempting to UPDATE any row MUST raise an IntegrityError due to the
         # `audit_log_no_update` trigger. This is the primary tamper barrier.
-        with pytest.raises(_sqlite3.IntegrityError, match="audit_log is append-only"):
+        with pytest.raises(sqlite3.IntegrityError, match="audit_log is append-only"):
             self.audit_log.conn.execute(
-                "UPDATE audit_log SET payload = '{\"k\":\"TAMPERED\"}' "
+                'UPDATE audit_log SET payload = \'{"k":"TAMPERED"}\' '
                 "WHERE id = (SELECT MAX(id) FROM audit_log)"
             )
 
@@ -291,8 +286,6 @@ class TestDay1VerticalSlice:
 
     def test_audit_log_no_delete_trigger_blocks_row_removal(self):
         """Safety: SQLite trigger prevents any DELETE on the audit_log table."""
-        import sqlite3 as _sqlite3
-
         self.audit_log.append(
             actor="test",
             event_type="test_event_delete_check",
@@ -300,8 +293,10 @@ class TestDay1VerticalSlice:
             assessment_id=self.assessment_id,
         )
 
-        with pytest.raises(_sqlite3.IntegrityError, match="audit_log is append-only"):
-            self.audit_log.conn.execute("DELETE FROM audit_log WHERE id = (SELECT MAX(id) FROM audit_log)")
+        with pytest.raises(sqlite3.IntegrityError, match="audit_log is append-only"):
+            self.audit_log.conn.execute(
+                "DELETE FROM audit_log WHERE id = (SELECT MAX(id) FROM audit_log)"
+            )
 
         verification = self.audit_log.verify_chain()
         assert verification.ok
