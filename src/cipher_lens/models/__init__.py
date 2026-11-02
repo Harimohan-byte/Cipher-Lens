@@ -1,6 +1,12 @@
 """Core domain models for Cipher-Lens."""
 
 from cipher_lens.models.approvals import ApprovalDecision, ApprovalRequest
+from cipher_lens.models.assessment import (
+    Assessment,
+    AssessmentResumeState,
+    AssessmentStatus,
+    StepRun,
+)
 from cipher_lens.models.findings import (
     Asset,
     CvssInfo,
@@ -19,6 +25,9 @@ __all__ = [
     "ActionClass",
     "ApprovalDecision",
     "ApprovalRequest",
+    "Assessment",
+    "AssessmentResumeState",
+    "AssessmentStatus",
     "Asset",
     "CvssInfo",
     "Evidence",
@@ -29,5 +38,6 @@ __all__ = [
     "PlanStep",
     "RawFinding",
     "RiskScore",
+    "StepRun",
     "ValidationRecord",
 ]

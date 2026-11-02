@@ -28,6 +28,9 @@ Every decision that changes how we build goes here with a date and a reason. New
 | 2026-11-03 | ZAP adapter uses httpx with X-ZAP-API-Key header, restricts context regex strictly to target URL with exclusions, and enforces per-step human approval prior to active scan | AGENTS.md Rule 2 & Master Plan A6: prevents off-target scanning and unauthorized intrusive web attacks |
 | 2026-11-03 | Sensitive CLI flags and URLs in argv are redacted before audit storage; task cancellations terminate the process group | AGENTS.md Rule 7, 9 & CodeRabbit review fixes |
 | 2026-11-03 | NVD lookups use CVE API 2.0 strictly for tool-reported CVEs with validated regex; CISA KEV and EPSS cached in SQLite with TTL; offline mode uses local snapshots; failures return enrichment_unavailable without guessing scores | AGENTS.md Rule 3 & Master Plan A7: prevents vulnerability metric fabrication |
+| 2026-11-03 | Assessment, PlanStep, StepRun, Finding, Evidence, and Approval entities are persisted in SQLite with relational foreign keys and JSON columns for complex nested attributes; AssessmentRepository provides crash recovery (reset_interrupted_steps) and resumption (resume_assessment) | AGENTS.md Rule 7, 8 & Master Plan A8: state persistence and crash recovery across process restarts |
+| 2026-11-03 | PDF reports are generated using pure-Python ReportLab with a two-pass NumberedCanvas (computing total pages, running headers/footers), structured into six required sections and three appendices, strictly segregating direct evidence from AI inference | AGENTS.md Rule 4 & Master Plan A9, §10: deterministic, offline report generation without fabricating data |
+
 
 ## Open items to fill in
 - Gemini free-tier model IDs and limits (requests per minute, tokens per minute, requests per day) from AI Studio, plan section 4.2.
