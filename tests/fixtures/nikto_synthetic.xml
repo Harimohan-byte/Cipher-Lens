@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC TEST FIXTURE: origin=sample, created=2026-11-03, created_for=Cipher-Lens Day 2 B7 testing -->
+<!-- DO NOT USE AS REAL SCAN EVIDENCE. Not from any live target. -->
+<niktoscan>
+  <scandetails
+    targetip="10.0.0.5"
+    targethostname="lab-target.local"
+    targetport="3000"
+    targetbanner="Apache/2.4.51"
+    starttime="2026-11-03 00:00:00"
+    sitename="http://lab-target.local:3000/"
+    siteip="10.0.0.5"
+    hostheader="lab-target.local"
+    errors="0"
+    checks="6544"
+    version="2.1.6"
+  >
+    <item id="001" osvdbid="3092" osvdblink="https://osvdb.org/3092" method="GET">
+      <description>Apache default file found.</description>
+      <uri>/manual/</uri>
+      <namelink>http://lab-target.local:3000/manual/</namelink>
+      <iplink>http://10.0.0.5:3000/manual/</iplink>
+    </item>
+    <item id="002" osvdbid="0" osvdblink="" method="GET">
+      <description>X-Frame-Options header is not included in the HTTP response to protect against clickjacking attacks.</description>
+      <uri>/</uri>
+      <namelink>http://lab-target.local:3000/</namelink>
+      <iplink>http://10.0.0.5:3000/</iplink>
+    </item>
+    <item id="003" osvdbid="877" osvdblink="https://osvdb.org/877" method="GET">
+      <description>HTTP TRACE method is active, suggesting the host is vulnerable to XST.</description>
+      <uri>/</uri>
+      <namelink>http://lab-target.local:3000/</namelink>
+      <iplink>http://10.0.0.5:3000/</iplink>
+    </item>
+  </scandetails>
+</niktoscan>

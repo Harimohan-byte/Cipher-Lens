@@ -1,29 +1,117 @@
-"""Nmap adapter and defusedxml parser spike."""
+"""Nmap adapter, argv builder, live runner, and defusedxml parser."""
 
 import re
 import shutil
+import subprocess
+import time
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
 from defusedxml import ElementTree as ET
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from cipher_lens.adapters.base import (
     AdapterStatus,
     BaseAdapter,
+    ExecutionContext,
+    ExecutionResult,
     HealthResult,
 )
 from cipher_lens.models.findings import Asset, Evidence, RawFinding
 from cipher_lens.models.observations import Observation
+from cipher_lens.models.plan import PlanStep
 
 CVE_PATTERN = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
+
+# Strict allowlist of safe NSE scripts (§7 Task B6)
+ALLOWED_NSE_SCRIPTS: set[str] = {
+    "banner",
+    "http-title",
+    "http-headers",
+    "http-methods",
+    "http-server-header",
+    "ssl-cert",
+    "ssl-enum-ciphers",
+    "http-vuln-cve2021-41773",
+}
+
+PORTS_REGEX = re.compile(r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$")
+DISALLOWED_TARGET_CHARS = re.compile(r"[;&|`$\s\r\n]")
 
 
 class NmapParams(BaseModel):
     """Validated parameters for Nmap execution."""
+
     target: str
     ports: str | None = None
-    profile: str = Field(default="discovery", pattern="^(discovery|service|scripts)$")
+    profile: Literal["discovery", "service", "scripts"] = "discovery"
+    scripts: list[str] = Field(default_factory=list)
+
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, v: str) -> str:
+        clean = v.strip()
+        if not clean or DISALLOWED_TARGET_CHARS.search(clean):
+            raise ValueError(f"Invalid characters in target '{v}'; shell injection disallowed")
+        return clean
+
+    @field_validator("ports")
+    @classmethod
+    def validate_ports(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        clean = v.strip()
+        if not clean:
+            return None
+        if not PORTS_REGEX.match(clean):
+            raise ValueError(f"Invalid port specification '{v}'; must be comma-separated numbers or ranges")
+        return clean
+
+    @field_validator("scripts")
+    @classmethod
+    def validate_scripts(cls, scripts: list[str]) -> list[str]:
+        for s in scripts:
+            clean_s = s.strip()
+            if clean_s not in ALLOWED_NSE_SCRIPTS:
+                raise ValueError(
+                    f"Disallowed NSE script '{clean_s}'. Allowed scripts: {sorted(ALLOWED_NSE_SCRIPTS)}"
+                )
+        return scripts
+
+
+def build_nmap_argv(
+    params: NmapParams,
+    rate_limit: int | None = None,
+    binary_path: str = "nmap",
+) -> list[str]:
+    """Constructs a deterministic argv list for Nmap execution.
+
+    Invariants:
+    1. Never uses shell=True or string-formatted command lines.
+    2. Enforces TCP connect scan (-sT) to avoid raw socket privileges.
+    3. Output is always emitted as XML (-oX -) for defusedxml parsing.
+    4. Throttling maps to --max-rate.
+    """
+    argv = [binary_path, "-sT", "-oX", "-"]
+
+    if rate_limit is not None and rate_limit > 0:
+        argv.extend(["--max-rate", str(rate_limit)])
+
+    if params.ports:
+        argv.extend(["-p", params.ports])
+
+    if params.profile == "discovery":
+        pass  # Connect scan with specified or default ports
+    elif params.profile == "service":
+        argv.append("-sV")
+    elif params.profile == "scripts":
+        argv.append("-sV")
+        if params.scripts:
+            argv.extend(["--script", ",".join(params.scripts)])
+
+    argv.append(params.target)
+    return argv
 
 
 def parse_nmap_xml(
@@ -204,6 +292,70 @@ class NmapAdapter(BaseAdapter):
             status="unavailable",
             message="Nmap binary not found on PATH. Required for live scanning.",
         )
+
+    async def run(self, step: PlanStep, ctx: ExecutionContext) -> ExecutionResult:
+        """Executes Nmap safely with argv list, capturing raw output into ArtifactStore."""
+        # Validate parameters
+        params_dict = dict(step.params)
+        if "target" not in params_dict:
+            params_dict["target"] = step.target
+        params = NmapParams(**params_dict)
+
+        argv = build_nmap_argv(params, rate_limit=ctx.rate_limit)
+
+        start_time = time.perf_counter()
+        try:
+            # Execute subprocess without shell=True
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=ctx.timeout_seconds,
+                shell=False,
+            )
+            duration = time.perf_counter() - start_time
+
+            artifact_id = None
+            if proc.stdout:
+                meta = ctx.artifact_store.save_raw(
+                    content=proc.stdout,
+                    source_tool=self.name,
+                    run_id=step.step_id,
+                    extension="xml",
+                )
+                artifact_id = meta.artifact_id
+
+            status: Literal["succeeded", "failed", "timed_out"] = (
+                "succeeded" if proc.returncode == 0 else "failed"
+            )
+            return ExecutionResult(
+                status=status,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+                exit_code=proc.returncode,
+                duration_seconds=duration,
+                artifact_id=artifact_id,
+            )
+        except subprocess.TimeoutExpired as exc:
+            duration = time.perf_counter() - start_time
+            return ExecutionResult(
+                status="timed_out",
+                stdout=exc.stdout if isinstance(exc.stdout, str) else "",
+                stderr=f"Nmap scan timed out after {ctx.timeout_seconds}s",
+                exit_code=None,
+                duration_seconds=duration,
+                artifact_id=None,
+            )
+        except FileNotFoundError:
+            duration = time.perf_counter() - start_time
+            return ExecutionResult(
+                status="failed",
+                stdout="",
+                stderr="Nmap binary not found on PATH",
+                exit_code=127,
+                duration_seconds=duration,
+                artifact_id=None,
+            )
 
     def parse(self, raw_bytes: bytes, evidence_meta: Evidence) -> list[Observation | RawFinding]:
         """Parses Nmap XML output into Observations and RawFindings."""

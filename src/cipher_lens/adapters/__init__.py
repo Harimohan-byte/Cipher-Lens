@@ -7,7 +7,9 @@ from cipher_lens.adapters.base import (
     ExecutionResult,
     HealthResult,
 )
-from cipher_lens.adapters.nmap import NmapAdapter, NmapParams, parse_nmap_xml
+from cipher_lens.adapters.matrix import build_matrix, render_markdown
+from cipher_lens.adapters.nikto import NiktoAdapter, NiktoParams, build_nikto_argv, parse_nikto_xml
+from cipher_lens.adapters.nmap import NmapAdapter, NmapParams, build_nmap_argv, parse_nmap_xml
 
 __all__ = [
     "AdapterStatus",
@@ -17,5 +19,12 @@ __all__ = [
     "HealthResult",
     "NmapAdapter",
     "NmapParams",
+    "build_nmap_argv",
     "parse_nmap_xml",
+    "NiktoAdapter",
+    "NiktoParams",
+    "build_nikto_argv",
+    "parse_nikto_xml",
+    "build_matrix",
+    "render_markdown",
 ]
