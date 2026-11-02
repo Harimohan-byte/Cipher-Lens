@@ -225,3 +225,54 @@ def test_approval_decision_is_idempotent(
     )
     assert dec1.approval_id == dec2.approval_id
     assert dec1.decision == dec2.decision
+
+
+def test_approval_binding_to_assessment_id(
+    approval_manager: ApprovalManager, intrusive_step: PlanStep
+):
+    """CodeRabbit fix 1a: Approval in asmt-001 must not authorize the same step_id in asmt-002."""
+    req = approval_manager.request_approval(intrusive_step, assessment_id="asmt-001")
+    approval_manager.decide(
+        approval_id=req.approval_id,
+        decision="approved",
+        decided_by="lead",
+        reason="Approved for asmt-001",
+    )
+
+    # Valid for asmt-001
+    approval_manager.require(intrusive_step, assessment_id="asmt-001")
+
+    # MUST fail for asmt-002
+    with pytest.raises(ApprovalRequiredError, match="no approval requested for assessment 'asmt-002'"):
+        approval_manager.require(intrusive_step, assessment_id="asmt-002")
+
+
+def test_approval_content_tampering_detected(
+    approval_manager: ApprovalManager, intrusive_step: PlanStep
+):
+    """CodeRabbit fix 1b: Mutating step parameters after approval invalidates the approval."""
+    req = approval_manager.request_approval(intrusive_step, assessment_id="asmt-001")
+    approval_manager.decide(
+        approval_id=req.approval_id,
+        decision="approved",
+        decided_by="lead",
+        reason="Approved for original target",
+    )
+
+    # Modified target on the same step_id
+    tampered_step = intrusive_step.model_copy(update={"target": "http://evil.com/attack"})
+    with pytest.raises(ApprovalRequiredError, match="differs from the approved request"):
+        approval_manager.require(tampered_step, assessment_id="asmt-001")
+
+
+def test_unclassified_action_class_fails_closed(approval_manager: ApprovalManager):
+    """CodeRabbit fix 2: An unclassified action class must fail closed and raise ApprovalRequiredError."""
+    from unittest.mock import MagicMock
+
+    mock_step = MagicMock(spec=PlanStep)
+    mock_step.step_id = "step-unknown-01"
+    mock_step.action_class = "unclassified_action"
+
+    with pytest.raises(ApprovalRequiredError, match="unclassified action class"):
+        approval_manager.require(mock_step, assessment_id="asmt-001")
+

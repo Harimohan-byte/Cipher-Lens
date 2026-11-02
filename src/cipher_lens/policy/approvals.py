@@ -1,6 +1,7 @@
 # DECISION: INTRUSIVE and VALIDATION action classes require per-step human approval; IMPORT, DISCOVERY, and SCAN require plan approval.
 # DECISION: Approval decisions are final and immutable. A rejected step cannot be approved later; a new step must be proposed to preserve auditability.
 # DECISION: Re-applying the exact same decision for an approval is idempotent and returns the existing decision record.
+# DECISION: Approvals are bound to (assessment_id, step_id) and match step content (tool, target, action_class). Unclassified action classes fail closed.
 """Human-in-the-loop approval management and safety gating."""
 
 import uuid
@@ -41,7 +42,7 @@ class ApprovalManager:
         self.audit_log = audit_log
         self._plan_approvals: dict[str, ApprovalDecision] = {}
         self._step_requests: dict[str, ApprovalRequest] = {}
-        self._step_to_approval: dict[str, str] = {}
+        self._step_to_approval: dict[tuple[str, str], str] = {}
         self._decisions: dict[str, ApprovalDecision] = {}
 
     def approve_plan(
@@ -131,9 +132,20 @@ class ApprovalManager:
 
     def request_approval(self, step: PlanStep, assessment_id: str) -> ApprovalRequest:
         """Registers a pending approval request for a restricted action step."""
-        if step.step_id in self._step_to_approval:
-            appr_id = self._step_to_approval[step.step_id]
-            return self._step_requests[appr_id]
+        key = (assessment_id, step.step_id)
+        if key in self._step_to_approval:
+            appr_id = self._step_to_approval[key]
+            existing_req = self._step_requests[appr_id]
+            if (
+                existing_req.tool != step.tool
+                or existing_req.target != step.target
+                or existing_req.action_class != step.action_class
+            ):
+                raise ValueError(
+                    f"Step '{step.step_id}' in assessment '{assessment_id}' already has an approval "
+                    f"request with different parameters; step parameters cannot be modified"
+                )
+            return existing_req
 
         now = datetime.now(UTC)
         approval_id = f"appr_{assessment_id}_{step.step_id}_{uuid.uuid4().hex[:6]}"
@@ -149,7 +161,7 @@ class ApprovalManager:
             status="pending",
         )
         self._step_requests[approval_id] = request
-        self._step_to_approval[step.step_id] = approval_id
+        self._step_to_approval[key] = approval_id
 
         self._audit(
             actor="orchestrator",
@@ -229,14 +241,32 @@ class ApprovalManager:
         Raises ApprovalRequiredError or ApprovalRejectedError if unapproved.
         """
         if requires_per_step_approval(step.action_class):
-            appr_id = self._step_to_approval.get(step.step_id)
+            if assessment_id is None:
+                raise ApprovalRequiredError(
+                    f"Step '{step.step_id}' ({step.action_class.value}) "
+                    f"requires assessment_id for per-step approval verification"
+                )
+
+            key = (assessment_id, step.step_id)
+            appr_id = self._step_to_approval.get(key)
             if appr_id is None:
                 raise ApprovalRequiredError(
                     f"Step '{step.step_id}' ({step.action_class.value}) "
-                    f"requires human per-step approval; no approval requested"
+                    f"requires human per-step approval; no approval requested for assessment '{assessment_id}'"
                 )
 
             req = self._step_requests[appr_id]
+            if (
+                req.assessment_id != assessment_id
+                or req.tool != step.tool
+                or req.target != step.target
+                or req.action_class != step.action_class
+            ):
+                raise ApprovalRequiredError(
+                    f"Step '{step.step_id}' differs from the approved request; "
+                    f"a new approval is required"
+                )
+
             if req.status == "pending":
                 raise ApprovalRequiredError(
                     f"Step '{step.step_id}' ({step.action_class.value}) "
@@ -272,6 +302,13 @@ class ApprovalManager:
                     f"requires plan approval for assessment '{assessment_id}'"
                 )
             return
+
+        # Fail closed for any unclassified action class
+        raise ApprovalRequiredError(
+            f"Step '{step.step_id}' has unclassified action class "
+            f"'{step.action_class.value if hasattr(step.action_class, 'value') else step.action_class}'; "
+            f"approval tier is undefined"
+        )
 
     def _audit(
         self,
