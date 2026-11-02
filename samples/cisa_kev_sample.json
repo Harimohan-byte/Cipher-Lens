@@ -1,0 +1,17 @@
+{
+  "title": "CISA Known Exploited Vulnerabilities Catalog (Sample)",
+  "catalogVersion": "2026.11.01",
+  "count": 1,
+  "vulnerabilities": [
+    {
+      "cveID": "CVE-2021-41773",
+      "vendorProject": "Apache",
+      "product": "HTTP Server",
+      "vulnerabilityName": "Apache HTTP Server Path Traversal Vulnerability",
+      "dateAdded": "2021-11-03",
+      "shortDescription": "Apache HTTP Server contains a path traversal vulnerability.",
+      "requiredAction": "Apply updates per vendor instructions.",
+      "dueDate": "2021-11-17"
+    }
+  ]
+}
