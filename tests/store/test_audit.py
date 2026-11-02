@@ -132,6 +132,36 @@ def test_tamper_detection_break_it_check(
     assert result.first_bad_id == 2
 
 
+def test_tampered_non_dict_payload_fails_verification(
+    db_conn: sqlite3.Connection, audit_log: AuditLog
+):
+    """Vulnerability test: non-dict JSON payload (array, string, int) must fail verify_chain."""
+    for i in range(1, 3):
+        audit_log.append(actor="tester", event_type="dict_test", payload={"step": i})
+
+    cursor = db_conn.cursor()
+    cursor.execute("DROP TRIGGER IF EXISTS audit_log_no_update")
+    cursor.execute("UPDATE audit_log SET payload = '[1, 2, 3]' WHERE id = 2")
+
+    result = audit_log.verify_chain()
+    assert result.ok is False
+    assert result.first_bad_id == 2
+
+
+def test_verify_chain_with_expected_head_hash(audit_log: AuditLog):
+    """Test verifying chain against expected_head_hash to protect against tail tampering."""
+    event1 = audit_log.append(actor="tester", event_type="e1", payload={"step": 1})
+    event2 = audit_log.append(actor="tester", event_type="e2", payload={"step": 2})
+
+    # Correct head_hash verifies ok
+    assert audit_log.verify_chain(expected_head_hash=event2.row_hash).ok is True
+
+    # Stale/incorrect head_hash fails
+    mismatch = audit_log.verify_chain(expected_head_hash=event1.row_hash)
+    assert mismatch.ok is False
+    assert "Head hash mismatch" in mismatch.reason
+
+
 def test_rewired_prev_hash_detected(db_conn: sqlite3.Connection, audit_log: AuditLog):
     """Test 5: A rewired prev_hash is detected even if the row's row_hash is recomputed."""
     for i in range(1, 4):

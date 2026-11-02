@@ -166,10 +166,11 @@ class AuditLog:
 
         return event
 
-    def verify_chain(self) -> ChainVerification:
+    def verify_chain(self, expected_head_hash: str | None = None) -> ChainVerification:
         """Verifies the integrity of the entire audit chain.
 
         Never raises on tampering; returns ok=False with first_bad_id and a readable reason.
+        If expected_head_hash is provided, verifies that the chain terminates at that exact hash.
         """
         cursor = self.conn.cursor()
         cursor.execute(
@@ -179,11 +180,12 @@ class AuditLog:
         rows = cursor.fetchall()
 
         if not rows:
+            ok = expected_head_hash is None or expected_head_hash == GENESIS_HASH
             return ChainVerification(
-                ok=True,
+                ok=ok,
                 rows_checked=0,
-                first_bad_id=None,
-                reason="Log is empty",
+                first_bad_id=None if ok else 0,
+                reason="Log is empty" if ok else f"Empty log head_hash mismatch: expected {expected_head_hash}",
                 head_hash=GENESIS_HASH,
             )
 
@@ -233,6 +235,15 @@ class AuditLog:
                     head_hash=head_hash,
                 )
 
+            if not isinstance(parsed_payload, dict):
+                return ChainVerification(
+                    ok=False,
+                    rows_checked=idx,
+                    first_bad_id=row_id,
+                    reason=f"Payload at row {row_id} is not a JSON object/dict",
+                    head_hash=head_hash,
+                )
+
             if canonical_json(parsed_payload) != payload_text:
                 return ChainVerification(
                     ok=False,
@@ -268,6 +279,15 @@ class AuditLog:
 
             expected_id += 1
             expected_prev_hash = row_hash
+
+        if expected_head_hash is not None and head_hash != expected_head_hash:
+            return ChainVerification(
+                ok=False,
+                rows_checked=len(rows),
+                first_bad_id=rows[-1][0],
+                reason=f"Head hash mismatch: expected {expected_head_hash}, found {head_hash}",
+                head_hash=head_hash,
+            )
 
         return ChainVerification(
             ok=True,
