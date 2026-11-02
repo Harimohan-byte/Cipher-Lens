@@ -55,3 +55,32 @@ def test_scope_registry_operations():
     assert registry.get("non-existent") is None
     assert len(registry.list_all()) == 2
 
+
+def test_scope_validation_rejects_naive_datetime_and_inverted_window():
+    """CodeRabbit fix 7: Scope requires timezone-aware datetime and valid_from <= valid_to."""
+    import pytest
+    from pydantic import ValidationError
+
+    now_aware = datetime.now(UTC)
+    now_naive = datetime.now()  # No tzinfo
+
+    # 1. Naive datetime rejected
+    with pytest.raises(ValidationError):
+        Scope(
+            id="bad-tz",
+            owner="Alice",
+            authorization_reference="AUTH-BAD",
+            valid_from=now_naive,
+            valid_to=now_aware,
+        )
+
+    # 2. Inverted window (valid_from > valid_to) rejected
+    with pytest.raises(ValidationError, match="valid_from must not be after valid_to"):
+        Scope(
+            id="bad-window",
+            owner="Alice",
+            authorization_reference="AUTH-BAD",
+            valid_from=now_aware + timedelta(days=5),
+            valid_to=now_aware,
+        )
+

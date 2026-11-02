@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 
 class Scope(BaseModel):
@@ -15,10 +15,16 @@ class Scope(BaseModel):
     exclusions: list[str] = Field(default_factory=list)
     allowed_ports: list[int] = Field(default_factory=list)
     tool_allowlist: list[str] = Field(default_factory=list)
-    valid_from: datetime
-    valid_to: datetime
+    valid_from: AwareDatetime
+    valid_to: AwareDatetime
     rate_limit: int | None = None
     asset_tags: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_window(self) -> "Scope":
+        if self.valid_from > self.valid_to:
+            raise ValueError("valid_from must not be after valid_to")
+        return self
 
     def is_valid_at(self, check_time: datetime | None = None) -> bool:
         """Checks if the given or current timestamp falls within the validity window."""

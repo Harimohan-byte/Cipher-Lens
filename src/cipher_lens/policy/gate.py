@@ -1,8 +1,11 @@
 # DECISION: Default DNS resolution treats any resolution failure or partial out-of-scope resolution as an immediate denial to prevent DNS rebinding or unauthorized scans.
 # DECISION: Exclusions take absolute precedence over allows, checked before allow verification.
+# DECISION: Direct hostname matches still require all resolved IPs to be in scope to prevent DNS rebinding.
+# DECISION: When scope specifies allowed_ports, actions without an explicit or URL-derived port are denied to prevent scanners from scanning unauthorized ports.
 """Deterministic policy gate enforcing registered target scope, tool allowlists, and boundaries."""
 
 import ipaddress
+import re
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,6 +36,16 @@ class Decision:
     rule_id: str
 
 
+def redact_target(raw_target: str) -> str:
+    """Redacts user credentials from target strings before storage in audit logs."""
+    clean = raw_target.strip()
+    if "://" in clean:
+        return re.sub(r"://([^@/]+)@", r"://<redacted>@", clean)
+    if "@" in clean:
+        return re.sub(r"^([^@/]+)@", r"<redacted>@", clean)
+    return clean
+
+
 def parse_target(raw_target: str) -> ParsedTarget:
     """Safely extracts the destination host and port from a target string.
 
@@ -44,15 +57,14 @@ def parse_target(raw_target: str) -> ParsedTarget:
     if "://" in clean_target:
         parsed = urlsplit(clean_target)
         host = parsed.hostname or ""
-        port = parsed.port
+        port = parsed.port  # Raises ValueError if port is invalid/out-of-range
     else:
-        # Check for userinfo trick without scheme e.g. user@host
+        # Strip path, query, and fragment first (e.g. evil.com/a@10.0.0.5 -> evil.com)
+        clean_target = re.split(r"[/?#]", clean_target, maxsplit=1)[0]
+
+        # Then strip userinfo (e.g. user@host -> host)
         if "@" in clean_target:
             clean_target = clean_target.rpartition("@")[2]
-
-        # Handle path/query if passed without scheme e.g. host:port/path
-        if "/" in clean_target:
-            clean_target = clean_target.split("/")[0]
 
         # Handle bracketed IPv6: [2001:db8::1]:8080 or [2001:db8::1]
         if clean_target.startswith("["):
@@ -60,20 +72,25 @@ def parse_target(raw_target: str) -> ParsedTarget:
             if bracket_end != -1:
                 host = clean_target[1:bracket_end]
                 rest = clean_target[bracket_end + 1 :]
-                if rest.startswith(":") and rest[1:].isdigit():
-                    port = int(rest[1:])
+                if rest.startswith(":"):
+                    port_str = rest[1:]
+                    if not (port_str.isdigit() and 1 <= int(port_str) <= 65535):
+                        raise ValueError(f"Invalid port: {port_str}")
+                    port = int(port_str)
             else:
                 host = clean_target.strip("[]")
         elif clean_target.count(":") == 1:
             parts = clean_target.split(":")
-            if parts[1].isdigit():
-                host = parts[0]
-                port = int(parts[1])
-            else:
-                host = clean_target
+            host = parts[0]
+            port_str = parts[1]
+            if not (port_str.isdigit() and 1 <= int(port_str) <= 65535):
+                raise ValueError(f"Invalid port: {port_str}")
+            port = int(port_str)
         else:
             host = clean_target
 
+    # Normalize host: lowercase and strip trailing FQDN dot
+    host = host.rstrip(".").lower()
     is_ip = _is_ip(host)
     return ParsedTarget(raw=raw_target, host=host, port=port, is_ip=is_ip)
 
@@ -148,10 +165,37 @@ class PolicyGate:
             self._audit(decision, target, port, tool, action_class, assessment_id)
             return decision
 
-        parsed = parse_target(target)
+        try:
+            parsed = parse_target(target)
+        except ValueError as exc:
+            decision = Decision(
+                allowed=False,
+                reason=f"Invalid target specification '{target}': {exc}",
+                rule_id="INVALID_TARGET",
+            )
+            self._audit(decision, target, port, tool, action_class, assessment_id)
+            return decision
+
+        if port is not None and not (1 <= port <= 65535):
+            decision = Decision(
+                allowed=False,
+                reason=f"Invalid port parameter: {port}",
+                rule_id="INVALID_TARGET",
+            )
+            self._audit(decision, target, port, tool, action_class, assessment_id)
+            return decision
+
+        if parsed.port is not None and port is not None and parsed.port != port:
+            decision = Decision(
+                allowed=False,
+                reason=f"Conflicting ports specified: target URL port {parsed.port} vs parameter port {port}",
+                rule_id="PORT_CONFLICT",
+            )
+            self._audit(decision, target, port, tool, action_class, assessment_id)
+            return decision
+
         effective_port = port if port is not None else parsed.port
 
-        # Evaluate against active scopes (first matching allowed scope or best denial reason)
         best_decision = Decision(
             allowed=False,
             reason=f"Target '{target}' (host '{parsed.host}') is not in registered scope",
@@ -163,10 +207,10 @@ class PolicyGate:
             if decision.allowed:
                 best_decision = decision
                 break
-            # If rejected specifically by exclusion, tool, or port, prioritize that explicit reason
             if decision.rule_id in (
                 "EXCLUDED_TARGET",
                 "PORT_NOT_ALLOWED",
+                "PORT_REQUIRED_OR_NOT_ALLOWED",
                 "TOOL_NOT_ALLOWED",
                 "EXPIRED_VALIDITY_WINDOW",
                 "DNS_RESOLUTION_OUT_OF_SCOPE",
@@ -227,9 +271,9 @@ class PolicyGate:
 
         # 4. Exclusions strictly beat allows
         for exclusion in scope.exclusions:
-            clean_ex = exclusion.strip()
-            # Direct host/URL match
-            if clean_ex.lower() == parsed.host.lower() or clean_ex.lower() == parsed.raw.lower():
+            clean_ex = exclusion.strip().rstrip(".").lower()
+            # Direct host/URL match (normalized)
+            if clean_ex == parsed.host or clean_ex == parsed.raw.strip().rstrip(".").lower():
                 return Decision(
                     allowed=False,
                     reason=f"Target '{parsed.host}' is explicitly excluded in scope '{scope.id}'",
@@ -248,40 +292,51 @@ class PolicyGate:
                     )
 
         # 5. Target containment in allowed_targets
-        # Check direct host or exact IP match
         direct_match = False
         for allowed in scope.allowed_targets:
-            clean_al = allowed.strip()
-            if clean_al.lower() == parsed.host.lower() or clean_al.lower() == parsed.raw.lower():
+            clean_al = allowed.strip().rstrip(".").lower()
+            if clean_al == parsed.host or clean_al == parsed.raw.strip().rstrip(".").lower():
                 direct_match = True
                 break
 
-        if not direct_match:
-            # For every resolved IP, require that it falls inside at least one allowed target
-            for ip_obj in ips_to_check:
-                ip_in_scope = False
-                for allowed in scope.allowed_targets:
-                    if _ip_matches_entry(ip_obj, allowed):
-                        ip_in_scope = True
-                        break
-                if not ip_in_scope:
-                    rule = "NOT_IN_SCOPE" if parsed.is_ip else "DNS_RESOLUTION_OUT_OF_SCOPE"
-                    return Decision(
-                        allowed=False,
-                        reason=(
-                            f"{'Target IP' if parsed.is_ip else 'Resolved IP'} '{ip_obj}' for target '{parsed.host}' "
-                            f"is not in registered scope '{scope.id}'"
-                        ),
-                        rule_id=rule,
-                    )
+        # For every resolved IP, require that it falls inside at least one allowed target
+        for ip_obj in ips_to_check:
+            ip_in_scope = False
+            for allowed in scope.allowed_targets:
+                if _ip_matches_entry(ip_obj, allowed):
+                    ip_in_scope = True
+                    break
+            if not ip_in_scope:
+                rule = "NOT_IN_SCOPE" if parsed.is_ip else "DNS_RESOLUTION_OUT_OF_SCOPE"
+                return Decision(
+                    allowed=False,
+                    reason=(
+                        f"{'Target IP' if parsed.is_ip else 'Resolved IP'} '{ip_obj}' for target '{parsed.host}' "
+                        f"is not in registered scope '{scope.id}'"
+                    ),
+                    rule_id=rule,
+                )
 
         # 6. Allowed ports check for targets within scope
-        if scope.allowed_ports and port is not None and port not in scope.allowed_ports:
-            return Decision(
-                allowed=False,
-                reason=f"Port {port} for target '{parsed.host}' is not in allowed ports {scope.allowed_ports} for scope '{scope.id}'",
-                rule_id="PORT_NOT_ALLOWED",
-            )
+        if scope.allowed_ports:
+            if port is None:
+                return Decision(
+                    allowed=False,
+                    reason=(
+                        f"Scope '{scope.id}' restricts ports to {scope.allowed_ports}; "
+                        f"target '{parsed.host}' must specify an authorized port"
+                    ),
+                    rule_id="PORT_REQUIRED_OR_NOT_ALLOWED",
+                )
+            if port not in scope.allowed_ports:
+                return Decision(
+                    allowed=False,
+                    reason=(
+                        f"Port {port} for target '{parsed.host}' is not in allowed "
+                        f"ports {scope.allowed_ports} for scope '{scope.id}'"
+                    ),
+                    rule_id="PORT_NOT_ALLOWED",
+                )
 
         return Decision(
             allowed=True,
@@ -298,12 +353,13 @@ class PolicyGate:
         action_class: ActionClass,
         assessment_id: str | None,
     ) -> None:
-        """Records an immutable audit event for every policy decision."""
+        """Records an immutable audit event for every policy decision with redacted credentials."""
         if self.audit_log is None:
             return
 
+        redacted = redact_target(target)
         payload: dict[str, Any] = {
-            "target": target,
+            "target": redacted,
             "port": port,
             "tool": tool,
             "action_class": str(action_class.value if hasattr(action_class, "value") else action_class),
