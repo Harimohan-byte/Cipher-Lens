@@ -23,6 +23,8 @@ Every decision that changes how we build goes here with a date and a reason. New
 | 2026-11-03 | Audit log UPDATE/DELETE is blocked at the SQLite trigger level (`audit_log_no_update`, `audit_log_no_delete` triggers) as the primary tamper barrier; hash-chain `verify_chain()` is a secondary integrity check | Trigger-level blocking catches both accidental and adversarial modifications before they are committed to disk |
 | 2026-11-03 | `NmapAdapter.parse()` uses defusedxml exclusively; standard library `xml.etree.ElementTree` is never used for any tool output | AGENTS.md rule 6: parse all XML with defusedxml |
 | 2026-11-03 | CVE IDs are only emitted from `RawFinding.cve` if the tool's output string contains a matching `CVE-YYYY-NNNNN` pattern; no inference or lookup at parse time | AGENTS.md rule 3: never fabricate CVE IDs |
+| 2026-11-03 | Subprocess execution uses argv lists exclusively via asyncio.create_subprocess_exec (no shell=True); timeouts kill the entire process group (POSIX: killpg, Windows: taskkill /F /T /PID) | AGENTS.md Rule 1 & Master Plan A5: prevents command injection and orphan scanner processes |
+| 2026-11-03 | Every tool run goes through PolicyGate authorization and ApprovalManager requirements before any subprocess is spawned; raw output is stored unmodified with SHA-256 | AGENTS.md Rule 2 & Rule 8: execution choke point enforcement |
 
 ## Open items to fill in
 - Gemini free-tier model IDs and limits (requests per minute, tokens per minute, requests per day) from AI Studio, plan section 4.2.
