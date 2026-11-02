@@ -6,7 +6,7 @@
 **Operating rule:** authorized targets only. Local practice targets while developing; the organizer lab for the final demo. Never scan public, third-party, or unapproved systems.
 <!-- EDIT 1: replace the first four header lines (Project ... Operating rule) with: -->
 **Version:** v2.1 (status and git workflow added in §16; sections 1-15 unchanged except where marked)
-**Status as of 3 Nov 2026:** Day 1 COMPLETE. Day 2 in progress (A5 & A6 implemented). See §16.2 for the live tracker.
+**Status as of 3 Nov 2026:** Day 1 & Day 2 COMPLETE. Day 3 in progress (A7 implemented). See §16.2 for the live tracker.
 
 ---
 
@@ -613,6 +613,7 @@ Legend: DONE = files exist, tests pass, red-flag scan clean. PARTIAL = some piec
 | Shared: contracts freeze | A+B | DONE | PR #7 merged; models and interfaces frozen |
 | A5 runner/executor | A | DONE | orchestrator/runner.py, RateLimiter, ToolRunner, process group kill on timeout, policy & approval gating, audit lifecycle events (15 tests) |
 | A6 ZAP adapter | A | DONE | adapters/zap.py, httpx client, spider/passive/active workflow, bounded context regex, active scan gated by ApprovalManager, alerts JSON artifact, parser (7 tests) |
+| A7 enrichment | A | DONE | enrichment/: nvd.py, kev.py, epss.py, cache.py, service.py, CveEnrichment model, TTL caching, offline snapshots, unknown CVE not-found handling (9 tests) |
 
 ### 16.3 Git working agreement
 Rules
