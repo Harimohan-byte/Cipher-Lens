@@ -27,6 +27,7 @@ Every decision that changes how we build goes here with a date and a reason. New
 | 2026-11-03 | Every tool run goes through PolicyGate authorization and ApprovalManager requirements before any subprocess is spawned; raw output is stored unmodified with SHA-256 | AGENTS.md Rule 2 & Rule 8: execution choke point enforcement |
 | 2026-11-03 | ZAP adapter uses httpx with X-ZAP-API-Key header, restricts context regex strictly to target URL with exclusions, and enforces per-step human approval prior to active scan | AGENTS.md Rule 2 & Master Plan A6: prevents off-target scanning and unauthorized intrusive web attacks |
 | 2026-11-03 | Sensitive CLI flags and URLs in argv are redacted before audit storage; task cancellations terminate the process group | AGENTS.md Rule 7, 9 & CodeRabbit review fixes |
+| 2026-11-03 | NVD lookups use CVE API 2.0 strictly for tool-reported CVEs with validated regex; CISA KEV and EPSS cached in SQLite with TTL; offline mode uses local snapshots; failures return enrichment_unavailable without guessing scores | AGENTS.md Rule 3 & Master Plan A7: prevents vulnerability metric fabrication |
 
 ## Open items to fill in
 - Gemini free-tier model IDs and limits (requests per minute, tokens per minute, requests per day) from AI Studio, plan section 4.2.
