@@ -1,0 +1,42 @@
+"""Database table definitions and schema constants for Cipher-Lens."""
+
+CREATE_AUDIT_LOG_TABLE = """
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    assessment_id TEXT,
+    payload TEXT NOT NULL,
+    prev_hash TEXT NOT NULL,
+    row_hash TEXT NOT NULL UNIQUE
+);
+"""
+
+CREATE_AUDIT_LOG_NO_UPDATE_TRIGGER = """
+CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+BEFORE UPDATE ON audit_log
+BEGIN
+    SELECT RAISE(ABORT, 'audit_log is append-only');
+END;
+"""
+
+CREATE_AUDIT_LOG_NO_DELETE_TRIGGER = """
+CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+BEFORE DELETE ON audit_log
+BEGIN
+    SELECT RAISE(ABORT, 'audit_log is append-only');
+END;
+"""
+
+SCHEMA_STATEMENTS: list[str] = [
+    CREATE_AUDIT_LOG_TABLE,
+    CREATE_AUDIT_LOG_NO_UPDATE_TRIGGER,
+    CREATE_AUDIT_LOG_NO_DELETE_TRIGGER,
+]
+
+# Aliases for convenience and backward/forward compatibility
+AUDIT_LOG_TABLE_SQL = CREATE_AUDIT_LOG_TABLE
+AUDIT_LOG_NO_UPDATE_TRIGGER_SQL = CREATE_AUDIT_LOG_NO_UPDATE_TRIGGER
+AUDIT_LOG_NO_DELETE_TRIGGER_SQL = CREATE_AUDIT_LOG_NO_DELETE_TRIGGER
+TABLES_SQL = SCHEMA_STATEMENTS
