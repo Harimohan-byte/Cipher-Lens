@@ -305,3 +305,101 @@ def test_every_decision_is_audited(policy_gate: PolicyGate, db_conn: sqlite3.Con
     for actor, event_type, _ in rows:
         assert actor == "policy_gate"
         assert event_type == "policy_decision"
+
+
+def test_invalid_port_in_url_audited_as_denied(
+    policy_gate: PolicyGate, db_conn: sqlite3.Connection
+):
+    """CodeRabbit fix 1: Invalid port in URL raises ValueError, caught & audited as denied."""
+    dec = policy_gate.authorize(
+        target="http://192.168.1.10:99999/",
+        port=None,
+        tool="nmap",
+        action_class=ActionClass.DISCOVERY,
+    )
+    assert dec.allowed is False
+    assert dec.rule_id == "INVALID_TARGET"
+
+    cur = db_conn.cursor()
+    cur.execute("SELECT actor, event_type, payload FROM audit_log ORDER BY id DESC LIMIT 1")
+    row = cur.fetchone()
+    assert row[0] == "policy_gate"
+    assert row[1] == "policy_decision"
+    assert '"allowed":false' in row[2]
+
+
+def test_schemeless_path_userinfo_parse_order():
+    """CodeRabbit fix 2: Path stripped before userinfo so @ in path does not change host."""
+    parsed = parse_target("evil.com/a@10.0.0.5")
+    assert parsed.host == "evil.com"
+
+
+def test_trailing_dot_exclusion_bypass_prevented(policy_gate: PolicyGate):
+    """CodeRabbit fix 3: Trailing FQDN dot (e.g. excluded.app.local.) cannot bypass exclusions."""
+    dec = policy_gate.authorize(
+        target="excluded.app.local.",
+        port=80,
+        tool="nmap",
+        action_class=ActionClass.DISCOVERY,
+    )
+    assert dec.allowed is False
+    assert dec.rule_id == "EXCLUDED_TARGET"
+
+
+def test_allowed_hostname_resolving_out_of_scope_is_rejected(
+    sample_scope: Scope, audit_log: AuditLog
+):
+    """CodeRabbit fix 4: Allowed hostname resolving to out-of-scope IP is strictly rejected."""
+    # Poisoned DNS resolver: app.local resolves to public 8.8.8.8
+    poisoned_resolver = lambda host: ["8.8.8.8"]  # noqa: E731
+    registry = ScopeRegistry()
+    registry.register(sample_scope)
+    gate = PolicyGate(registry=registry, audit_log=audit_log, resolver=poisoned_resolver)
+
+    dec = gate.authorize(target="app.local", port=80, tool="nmap")
+    assert dec.allowed is False
+    assert dec.rule_id == "DNS_RESOLUTION_OUT_OF_SCOPE"
+    assert "8.8.8.8" in dec.reason
+
+
+def test_unspecified_port_and_port_conflict(policy_gate: PolicyGate):
+    """CodeRabbit fix 5: Port required if scope sets allowed_ports; conflicting ports rejected."""
+    # 1. Scope restricts ports to [80, 443, 8080, 8443], but target has no port
+    dec_no_port = policy_gate.authorize(
+        target="192.168.1.10",
+        port=None,
+        tool="nmap",
+    )
+    assert dec_no_port.allowed is False
+    assert dec_no_port.rule_id == "PORT_REQUIRED_OR_NOT_ALLOWED"
+
+    # 2. Conflicting ports: URL specifies 8080, argument specifies 443
+    dec_conflict = policy_gate.authorize(
+        target="http://192.168.1.10:8080/",
+        port=443,
+        tool="zap",
+    )
+    assert dec_conflict.allowed is False
+    assert dec_conflict.rule_id == "PORT_CONFLICT"
+
+
+def test_credentials_redacted_in_audit_log(
+    policy_gate: PolicyGate, db_conn: sqlite3.Connection
+):
+    """CodeRabbit fix 6: Credentials in target URL must never leak into audit log."""
+    raw_target_with_secret = "http://admin:super_secret_password_123@192.168.1.10:8080/admin"
+    dec = policy_gate.authorize(
+        target=raw_target_with_secret,
+        port=8080,
+        tool="zap",
+    )
+    assert dec.allowed is True
+
+    cur = db_conn.cursor()
+    cur.execute("SELECT payload FROM audit_log ORDER BY id DESC LIMIT 1")
+    payload = cur.fetchone()[0]
+
+    # Secret password MUST NOT appear anywhere in the audit payload
+    assert "super_secret_password_123" not in payload
+    assert "<redacted>@" in payload
+
