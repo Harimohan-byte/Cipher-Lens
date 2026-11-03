@@ -192,6 +192,32 @@ CREATE_APPROVALS_STEP_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_approvals_step ON approvals(assessment_id, step_id);
 """
 
+CREATE_LLM_TRACES_TABLE = """
+CREATE TABLE IF NOT EXISTS llm_traces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    assessment_id TEXT,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_hash TEXT NOT NULL,
+    input_summary TEXT NOT NULL,
+    output TEXT NOT NULL,
+    label TEXT NOT NULL,
+    tokens_prompt INTEGER,
+    tokens_completion INTEGER,
+    latency_ms INTEGER,
+    outcome TEXT NOT NULL
+);
+"""
+
+CREATE_LLM_TRACES_HASH_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_llm_traces_prompt_hash ON llm_traces(prompt_hash);
+"""
+
+CREATE_LLM_TRACES_ASSESSMENT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_llm_traces_assessment ON llm_traces(assessment_id);
+"""
+
 SCHEMA_STATEMENTS: list[str] = [
     CREATE_AUDIT_LOG_TABLE,
     CREATE_AUDIT_LOG_NO_UPDATE_TRIGGER,
@@ -213,6 +239,9 @@ SCHEMA_STATEMENTS: list[str] = [
     CREATE_APPROVALS_TABLE,
     CREATE_APPROVALS_ASSESSMENT_INDEX,
     CREATE_APPROVALS_STEP_INDEX,
+    CREATE_LLM_TRACES_TABLE,
+    CREATE_LLM_TRACES_HASH_INDEX,
+    CREATE_LLM_TRACES_ASSESSMENT_INDEX,
 ]
 
 # Aliases for convenience and backward/forward compatibility
