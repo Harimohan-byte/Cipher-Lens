@@ -5,8 +5,8 @@
 **How code gets written:** AI coding agents write most of it; the two of you own design decisions, review, integration, and the demo.
 **Operating rule:** authorized targets only. Local practice targets while developing; the organizer lab for the final demo. Never scan public, third-party, or unapproved systems.
 <!-- EDIT 1: replace the first four header lines (Project ... Operating rule) with: -->
-**Version:** v2.1 (status and git workflow added in §16; sections 1-15 unchanged except where marked)
-**Status as of 3 Nov 2026:** Day 1, Day 2, Day 3, Day 4 & Day 5 COMPLETE. Day 6 in progress: Task A14 (Failure and Replay Modes) COMPLETE. See §16.2 for the live tracker.
+**Version:** v2.2 (Day 1-6 complete, release hardening & golden run verified)
+**Status as of 4 Nov 2026:** Day 1 through Day 6 ALL COMPLETE (A1-A15, B1-B20). 244 tests passing, zero lint errors, golden run verified, release tag v1.0.0 ready. See §16.2 for the live tracker.
 
 ---
 
@@ -628,6 +628,11 @@ Legend: DONE = files exist, tests pass, red-flag scan clean. PARTIAL = some piec
 | A12 Streamlit core | A | DONE | ui/: state.py, app.py, __init__.py; 6 pages (Scope boundary, Natural intake & plan, Approvals & execution, Findings & risk, Audit & LLM traces, Report PDF), live verification & download (6 tests) |
 | A13 Manual validation | A | DONE | policy/validation.py, ui/state.py, ui/app.py; human validation request, gate approve/deny, outcome attestation with mandatory artifact, status transitions (confirmed/false_positive/suspected), audit logging, Metasploit blocked (6 tests) |
 | A14 Failure and replay | A | DONE | orchestrator/chaos.py, replay.py, ui/state.py, ui/app.py; chaos switches (kill ZAP, slow Nmap, malformed XML, LLM down, NVD down), offline replay pipeline from recorded artifacts with origin='replayed' (10 tests) |
+| B17 Findings UI | B | DONE | ui/findings.py, tests/ui/test_findings_page.py; filter/sort, status badges, standards mapping via mappings.yaml, atomic triage override transactions with hash-chained audit logging (8 tests) |
+| B18 Report Assembly | B | DONE | reports/assembly.py, tests/reports/test_report_assembly.py; ReportAssembler coordinating real assessment, runs, evidence index, and grounded executive summaries via GroundingValidator (6 tests) |
+| A15 Docs & release | A | DONE | ARCHITECTURE.md, README.md, RUNBOOK.md, LICENSES.md, docs/DECISIONS.md; full architecture spec, operational runbook, license compliance, and prior-art comparison |
+| B19 Golden run | B | DONE | scripts/golden_run.py, tests/test_golden_run.py; end-to-end golden run, NIST SP 800-115 PDF report generation, 3 findings hand-verified to raw SHA-256 evidence, audit chain verified |
+| B20 QA sweep | B | DONE | Full test run (244 tests passing), ruff clean, git ls-files audit clean (no secrets, databases, or raw scans tracked) |
 
 ### 16.3 Git working agreement
 Rules
