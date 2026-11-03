@@ -1,0 +1,43 @@
+# Cipher-Lens Risk Scoring Configuration (B14)
+# Formula: score = 100 * (0.35 * severity + 0.25 * exploitability + 0.15 * exposure + 0.10 * criticality + 0.15 * confidence)
+version: "1.0.0"
+
+weights:
+  severity: 0.35
+  exploitability: 0.25
+  exposure: 0.15
+  asset_criticality: 0.10
+  confidence: 0.15
+
+severity_bands:
+  critical: 1.0
+  high: 0.75
+  medium: 0.50
+  low: 0.25
+  info: 0.0
+
+confidence_weights:
+  high: 1.0
+  medium: 0.6
+  low: 0.3
+
+exposure_weights:
+  external: 1.0
+  internal: 0.5
+  isolated: 0.2
+  default: 0.5
+
+criticality_weights:
+  critical: 1.0
+  high: 0.8
+  medium: 0.5
+  low: 0.2
+  default: 0.5
+
+risk_bands:
+  critical: 80.0
+  high: 60.0
+  medium: 40.0
+  low: 20.0
+  informational: 0.0
+
