@@ -66,14 +66,15 @@ _DEFAULT_RISK_BANDS = {
 class RiskScorer:
     """Calculates transparent composite risk scores with detailed factor breakdowns."""
 
-    def __init__(self, config: dict) -> None:
-        self.version = config.get("version", "1.0.0")
-        self.weights = {**_DEFAULT_WEIGHTS, **config.get("weights", {})}
-        self.severity_bands = {**_DEFAULT_SEVERITY_BANDS, **config.get("severity_bands", {})}
-        self.confidence_weights = {**_DEFAULT_CONFIDENCE_WEIGHTS, **config.get("confidence_weights", {})}
-        self.exposure_weights = {**_DEFAULT_EXPOSURE_WEIGHTS, **config.get("exposure_weights", {})}
-        self.criticality_weights = {**_DEFAULT_CRITICALITY_WEIGHTS, **config.get("criticality_weights", {})}
-        self.risk_bands = {**_DEFAULT_RISK_BANDS, **config.get("risk_bands", {})}
+    def __init__(self, config: dict | None = None) -> None:
+        cfg = config or {}
+        self.version = cfg.get("version", "1.0.0")
+        self.weights = {**_DEFAULT_WEIGHTS, **cfg.get("weights", {})}
+        self.severity_bands = {**_DEFAULT_SEVERITY_BANDS, **cfg.get("severity_bands", {})}
+        self.confidence_weights = {**_DEFAULT_CONFIDENCE_WEIGHTS, **cfg.get("confidence_weights", {})}
+        self.exposure_weights = {**_DEFAULT_EXPOSURE_WEIGHTS, **cfg.get("exposure_weights", {})}
+        self.criticality_weights = {**_DEFAULT_CRITICALITY_WEIGHTS, **cfg.get("criticality_weights", {})}
+        self.risk_bands = {**_DEFAULT_RISK_BANDS, **cfg.get("risk_bands", {})}
 
     @classmethod
     def load(cls, config_path: Path | str) -> "RiskScorer":

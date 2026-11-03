@@ -12,9 +12,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from cipher_lens.adapters.imports.burp import BurpImporter
+from cipher_lens.adapters.imports.nessus import NessusImporter
+from cipher_lens.adapters.imports.openvas import OpenvasImporter
+from cipher_lens.adapters.nikto import NiktoAdapter
+from cipher_lens.adapters.nmap import NmapAdapter
+from cipher_lens.adapters.zap import ZapAdapter
+from cipher_lens.correlate.risk import RiskScorer
 from cipher_lens.models.assessment import Assessment, AssessmentStatus
 from cipher_lens.models.findings import Finding
 from cipher_lens.models.plan import ActionClass, PlanStep
+from cipher_lens.orchestrator.chaos import ChaosConfig, ChaosManager
+from cipher_lens.orchestrator.replay import ReplayRunner
 from cipher_lens.planner.intake import parse_intake
 from cipher_lens.planner.llm import LlmClient
 from cipher_lens.planner.models import AssessmentRequest, PlanProposal, StateSummary
@@ -55,6 +64,26 @@ class UIController:
         self.approval_manager = ApprovalManager(audit_log=self.audit_log)
         self.artifact_store = ArtifactStore(base_dir=self.artifacts_dir)
         self.repository = AssessmentRepository(conn=self.conn)
+
+        self.adapters = {
+            "nmap": NmapAdapter(),
+            "nikto": NiktoAdapter(),
+            "zap": ZapAdapter(),
+            "burp": BurpImporter(),
+            "burp_import": BurpImporter(),
+            "nessus": NessusImporter(),
+            "nessus_import": NessusImporter(),
+            "openvas": OpenvasImporter(),
+            "openvas_import": OpenvasImporter(),
+        }
+        self.chaos_manager = ChaosManager()
+        self.replay_runner = ReplayRunner(
+            repository=self.repository,
+            artifact_store=self.artifact_store,
+            adapters=self.adapters,
+            risk_scorer=RiskScorer(),
+            audit_log=self.audit_log,
+        )
 
         self.llm_client = LlmClient(
             provider=llm_provider,
@@ -148,7 +177,11 @@ class UIController:
             evidence_ids=["scope"] + [e.id for e in evidence_list],
         )
 
-        plan = self.planner.plan_next_steps(state, assessment_id=assessment_id)
+        if self.chaos_manager.config.llm_down:
+            from cipher_lens.planner.rules_planner import rule_based_plan
+            plan = rule_based_plan(state)
+        else:
+            plan = self.planner.plan_next_steps(state, assessment_id=assessment_id)
 
         # Persist proposed steps
         for step in plan.steps:
@@ -344,4 +377,38 @@ class UIController:
         )
         self.repository.save_finding(assessment_id, updated)
         return updated
+
+    def replay_fixtures(
+        self,
+        assessment_id: str,
+        fixture_paths: list[Path | str] | None = None,
+    ) -> list[Finding]:
+        """Replays recorded scanner artifacts into the assessment with origin='replayed'."""
+        if fixture_paths is None:
+            fixtures_dir = Path(__file__).parent.parent.parent.parent / "tests" / "fixtures"
+            fixture_paths = [
+                fixtures_dir / "nmap_synthetic.xml",
+                fixtures_dir / "nikto_synthetic.xml",
+                fixtures_dir / "burp_synthetic.xml",
+            ]
+        return self.replay_runner.replay_fixtures(assessment_id, fixture_paths)
+
+    def set_chaos_switch(self, switch_name: str, enabled: bool) -> None:
+        """Toggles a runtime failure / chaos switch for resilience testing."""
+        if hasattr(self.chaos_manager.config, switch_name):
+            setattr(self.chaos_manager.config, switch_name, enabled)
+            self.audit_log.append(
+                actor="chaos_operator",
+                event_type="chaos_switch_toggled",
+                payload={"switch": switch_name, "enabled": enabled},
+                assessment_id=None,
+            )
+
+    def get_chaos_config(self) -> ChaosConfig:
+        """Retrieves the active chaos configuration."""
+        return self.chaos_manager.config
+
+    def get_limitations(self, assessment_id: str) -> list[str]:
+        """Returns recorded limitation gaps for an assessment."""
+        return self.chaos_manager.get_limitations(assessment_id)
 

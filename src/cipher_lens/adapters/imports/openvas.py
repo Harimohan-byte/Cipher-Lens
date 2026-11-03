@@ -139,7 +139,7 @@ class OpenvasImporter(BaseAdapter):
                         raw_sha256=evidence_meta.raw_sha256,
                         snippet=snippet,
                         observed_at=datetime.now(UTC),
-                        origin="import",
+                        origin=evidence_meta.origin or "import",
                     ),
                     cve=list(dict.fromkeys(cves)),
                     cwe=[],

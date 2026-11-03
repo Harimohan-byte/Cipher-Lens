@@ -587,3 +587,64 @@ def test_ui_validation_rejects_unbound_and_reused_approvals(ui_ctrl: UIControlle
             attested_by="analyst_alice",
             evidence_bytes=b"proof-2",
         )
+
+
+def test_ui_replay_fixtures_workflow(ui_ctrl: UIController) -> None:
+    """Task A14: Replay fixtures through UIController end-to-end."""
+    now = datetime.now(UTC)
+    scope = Scope(
+        id="scope-replay-ui",
+        name="Replay UI Lab",
+        authorization_reference="AUTH-REP-UI",
+        targets=["10.0.0.5"],
+        window_start=now - timedelta(hours=1),
+        window_end=now + timedelta(hours=12),
+    )
+    ui_ctrl.register_scope(scope)
+    assm, _, _ = ui_ctrl.submit_intake(
+        user_request="Assess 10.0.0.5",
+        title="Replay UI Assessment",
+        scope_id="scope-replay-ui",
+    )
+
+    findings = ui_ctrl.replay_fixtures(assm.id)
+    assert len(findings) > 0
+
+    persisted = ui_ctrl.repository.list_findings(assm.id)
+    assert len(persisted) == len(findings)
+    for f in persisted:
+        for ev in f.evidence:
+            assert ev.origin == "replayed"
+
+    # Verify audit event logged
+    events = ui_ctrl.get_audit_events(assessment_id=assm.id)
+    event_types = [e.event_type for e in events]
+    assert "tool_run_replayed" in event_types
+
+
+def test_ui_chaos_switches_and_llm_fallback(ui_ctrl: UIController) -> None:
+    """Task A14: Chaos switches can be toggled and force rule-based planner fallback."""
+    now = datetime.now(UTC)
+    scope = Scope(
+        id="scope-chaos-ui",
+        name="Chaos UI Lab",
+        authorization_reference="AUTH-CHAOS-UI",
+        targets=["10.0.0.5"],
+        window_start=now - timedelta(hours=1),
+        window_end=now + timedelta(hours=12),
+    )
+    ui_ctrl.register_scope(scope)
+    assm, _, _ = ui_ctrl.submit_intake(
+        user_request="Assess 10.0.0.5",
+        title="Chaos UI Assessment",
+        scope_id="scope-chaos-ui",
+    )
+
+    # Toggle chaos switch
+    ui_ctrl.set_chaos_switch("llm_down", True)
+    assert ui_ctrl.get_chaos_config().llm_down is True
+
+    # Plan generation must fall back to rule-based planner
+    plan = ui_ctrl.generate_plan(assm.id)
+    assert plan.planner_source == "rule-based"
+    assert len(plan.steps) > 0
