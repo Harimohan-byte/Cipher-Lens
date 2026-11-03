@@ -6,7 +6,7 @@
 **Operating rule:** authorized targets only. Local practice targets while developing; the organizer lab for the final demo. Never scan public, third-party, or unapproved systems.
 <!-- EDIT 1: replace the first four header lines (Project ... Operating rule) with: -->
 **Version:** v2.1 (status and git workflow added in §16; sections 1-15 unchanged except where marked)
-**Status as of 3 Nov 2026:** Day 1, Day 2 & Day 3 COMPLETE. Day 4 in progress: Task A10 (LLM Layer), Task A11 (Intake + Adaptive Planner), Tasks B14 (Risk Scorer), B15 (Orchestrator Engine), and B16 (Grounding Validator) COMPLETE. See §16.2 for the live tracker.
+**Status as of 3 Nov 2026:** Day 1, Day 2, Day 3 & Day 4 COMPLETE. Day 5 in progress: Task A12 (Streamlit Core UI) COMPLETE. See §16.2 for the live tracker.
 
 ---
 
@@ -625,6 +625,7 @@ Legend: DONE = files exist, tests pass, red-flag scan clean. PARTIAL = some piec
 | B14 Risk scorer | B | DONE | correlate/risk.py, config/risk.yaml; 0-100 risk score, CVSS/EPSS/KEV monotonic boosts, asset exposure, reproducible breakdown (PR #16, #17 merged) |
 | B15 Orchestrator | B | DONE | orchestrator/engine.py, events.py; async state machine, step deduplication, transient retry, approval gating, event queue (PR #16, #17 merged) |
 | B16 Grounding validator | B | DONE | orchestrator/grounding.py; grounding check for report tokens against DB, fake CVE rejection, retry once + deterministic template (PR #16, #17 merged) |
+| A12 Streamlit core | A | DONE | ui/: state.py, app.py, __init__.py; 6 pages (Scope boundary, Natural intake & plan, Approvals & execution, Findings & risk, Audit & LLM traces, Report PDF), live verification & download (6 tests) |
 
 ### 16.3 Git working agreement
 Rules
