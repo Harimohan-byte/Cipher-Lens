@@ -104,9 +104,10 @@ class OrchestrationEngine:
                 duration_seconds=0.0,
             )
 
-        # If currently running concurrently, await the in-flight task so we report its actual outcome
+        # If currently running concurrently, await the in-flight task shielded from cancellation
+        # so that a waiter cancellation does not cancel the underlying executing task.
         if idem_key in self._inflight_tasks:
-            return await self._inflight_tasks[idem_key]
+            return await asyncio.shield(self._inflight_tasks[idem_key])
 
         # 2. Check policy gate authorization
         raw_port = step.params.get("port")
