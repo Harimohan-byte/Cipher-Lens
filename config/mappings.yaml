@@ -36,3 +36,4 @@ attck_techniques:
   CWE-79: "T1189 - Drive-by Compromise"
   CWE-22: "T1083 - File and Directory Discovery"
   CWE-287: "T1078 - Valid Accounts"
+

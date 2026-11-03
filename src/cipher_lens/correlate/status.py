@@ -71,3 +71,4 @@ def evaluate_status_and_confidence(
         "medium",
         f"Single-tool observation from {rf.tool_name}; pending active validation.",
     )
+

@@ -73,3 +73,4 @@ class StandardsMapper:
     def map_step_phase(self, tool_name: str) -> str:
         """Maps tool execution step to NIST SP 800-115 phase."""
         return self._nist_phases.get(tool_name.lower().strip(), "unmapped")
+
