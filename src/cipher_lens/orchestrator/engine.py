@@ -69,9 +69,9 @@ class OrchestrationEngine:
             )
         )
 
-    def compute_idempotency_key(self, step: PlanStep) -> str:
-        """Deterministic hash of tool, target, and sorted params to prevent duplicated work."""
-        payload = f"{step.tool}|{step.target}|{sorted(step.params.items())}"
+    def compute_idempotency_key(self, step: PlanStep, assessment_id: str | None = None) -> str:
+        """Deterministic hash of assessment, tool, target, and sorted params to prevent duplicated work."""
+        payload = f"{assessment_id or ''}|{step.tool}|{step.target}|{sorted(step.params.items())}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     async def execute_step(
@@ -81,7 +81,7 @@ class OrchestrationEngine:
     ) -> ExecutionResult:
         """Executes a single plan step under policy gate, approval check, and runner execution."""
         step_id = step.step_id
-        idem_key = step.idempotency_key or self.compute_idempotency_key(step)
+        idem_key = step.idempotency_key or self.compute_idempotency_key(step, assessment_id=assessment_id)
 
         # 1. Check idempotency
         if idem_key in self._executed_keys:
@@ -99,10 +99,29 @@ class OrchestrationEngine:
             )
 
         # 2. Check policy gate authorization
-        target_port = step.params.get("port")
+        raw_port = step.params.get("port")
+        parsed_port: int | None = None
+        if raw_port is not None:
+            try:
+                parsed_port = int(raw_port)
+            except (ValueError, TypeError):
+                err_msg = f"Invalid port specification: '{raw_port}'"
+                self._emit(
+                    assessment_id,
+                    "step_rejected_by_policy",
+                    {"step_id": step_id, "reason": err_msg},
+                )
+                return ExecutionResult(
+                    status="failed",
+                    stdout="",
+                    stderr=err_msg,
+                    exit_code=1,
+                    duration_seconds=0.0,
+                )
+
         auth_decision = self.policy_gate.authorize(
             target=step.target,
-            port=int(target_port) if target_port else None,
+            port=parsed_port,
             tool=step.tool,
             action_class=step.action_class,
             assessment_id=assessment_id,
@@ -153,7 +172,10 @@ class OrchestrationEngine:
         self._emit(assessment_id, "step_started", {"step_id": step_id, "tool": step.tool})
         exec_result = await self.runner.run(step, assessment_id=assessment_id)
 
-        self._executed_keys.add(idem_key)
+        # Register idempotency key only after successful run so failures can be retried
+        if exec_result.status == "succeeded":
+            self._executed_keys.add(idem_key)
+
         self._emit(
             assessment_id,
             "step_finished",

@@ -284,6 +284,45 @@ def test_grounding_validator_rejects_hallucinated_cve():
     assert "unsupported cve" in result.error_message.lower() or "hallucinated" in result.error_message.lower()
 
 
+def test_grounding_validator_boundary_check():
+    """Checks that finding ID prefixes like VAPT-00012 don't match VAPT-0001."""
+    findings = [
+        Finding(
+            id="VAPT-0001",
+            title="Sample 1",
+            asset=Asset(host="10.0.0.5"),
+            sources=["nmap"],
+            evidence=[
+                Evidence(
+                    id="ev_01",
+                    source_tool="nmap",
+                    run_id="run-1",
+                    artifact_id="art-1",
+                    locator="/item",
+                    raw_sha256="0" * 64,
+                    snippet="x",
+                    observed_at=datetime.now(UTC),
+                    origin="sample",
+                )
+            ],
+            cve=[],
+            cwe=[],
+            tool_severity="high",
+            confidence="high",
+            status="confirmed",
+            status_reason="ok",
+            correlation_key="k1",
+            first_seen=datetime.now(UTC),
+            last_seen=datetime.now(UTC),
+        )
+    ]
+    validator = GroundingValidator()
+    # VAPT-00012 has 5 digits - should NOT match VAPT-0001
+    text = "Referencing VAPT-00012 in report"
+    res = validator.validate(text, findings)
+    assert res.is_valid is True  # VAPT-00012 is not recognized as a 4-digit VAPT ID pattern
+
+
 def test_grounding_validator_checks_counts():
     """Validates claimed counts against actual findings counts."""
     findings = [
