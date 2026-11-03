@@ -6,6 +6,7 @@ Invariants:
 - AGENTS.md Rule 7: Every state change writes a hash-chained audit event.
 """
 
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -263,10 +264,17 @@ class UIController:
         # Ensure approval request exists in memory manager if it was persisted
         if approval_id not in self.approval_manager._step_requests:
             app_tuple = self.repository.get_approval(approval_id)
-            if app_tuple:
-                req, _ = app_tuple
-                self.approval_manager._step_requests[req.approval_id] = req
-                self.approval_manager._step_to_approval[(req.assessment_id, req.step_id)] = req.approval_id
+            if app_tuple is None:
+                raise ValueError(f"Approval '{approval_id}' not found")
+            req, existing = app_tuple
+            if existing is not None:
+                if existing.decision != decision:
+                    raise ValueError(
+                        f"Approval decision for '{approval_id}' is final ({existing.decision}) and cannot be modified"
+                    )
+                return existing
+            self.approval_manager._step_requests[req.approval_id] = req
+            self.approval_manager._step_to_approval[(req.assessment_id, req.step_id)] = req.approval_id
 
         dec = decide_validation_request(
             approval_id=approval_id,
@@ -285,7 +293,9 @@ class UIController:
         """Finds any pending or decided validation approval for a finding."""
         approvals = self.repository.list_approvals(assessment_id)
         for req, dec in reversed(approvals):
-            if req.action_class == ActionClass.VALIDATION and finding_id in req.step_id:
+            if req.action_class == ActionClass.VALIDATION and re.fullmatch(
+                rf"val-{re.escape(finding_id)}-[0-9a-f]{{6}}", req.step_id
+            ):
                 return req, dec
         return None
 
@@ -309,15 +319,28 @@ class UIController:
         finding = self.repository.get_finding(assessment_id, finding_id)
         if not finding:
             raise ValueError(f"Finding '{finding_id}' not found in assessment '{assessment_id}'")
+
+        linked = self.get_validation_approval_for_finding(assessment_id, finding_id)
+        if linked is None or linked[0].approval_id != approval_decision.approval_id:
+            raise PermissionError("Approval does not belong to this finding's validation request")
+        stored = linked[1]
+        if stored is None:
+            raise PermissionError("Validation request has no recorded decision")
+        if stored.decision != "approved":
+            raise PermissionError(f"Validation approval was not approved ({stored.decision})")
+        if finding.validation is not None and finding.validation.approval_id == stored.approval_id:
+            raise ValueError("Validation outcome already recorded for this approval")
+
         updated = record_validation_outcome(
             finding=finding,
-            approval_decision=approval_decision,
+            approval_decision=stored,
             outcome=outcome,
             attested_by=attested_by,
             evidence_bytes=evidence_bytes,
             artifact_store=self.artifact_store,
             audit_log=self.audit_log,
             assessment_id=assessment_id,
+            approval_request=linked[0],
         )
         self.repository.save_finding(assessment_id, updated)
         return updated

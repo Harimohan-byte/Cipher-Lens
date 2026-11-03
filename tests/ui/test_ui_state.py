@@ -311,3 +311,279 @@ def test_ui_manual_validation_workflow(ui_ctrl: UIController) -> None:
     event_types = [e.event_type for e in events]
     assert "validation_requested" in event_types
     assert "validation_outcome_recorded" in event_types
+
+
+def test_ui_validation_exact_finding_id_matching(ui_ctrl: UIController) -> None:
+    """Regression test: finding F-1 must not match validation step of finding F-10."""
+    now = datetime.now(UTC)
+    scope = Scope(
+        id="scope-val-02",
+        name="Exact Match Lab",
+        authorization_reference="AUTH-VAL-2",
+        targets=["10.0.0.20"],
+        window_start=now - timedelta(hours=1),
+        window_end=now + timedelta(hours=12),
+    )
+    ui_ctrl.register_scope(scope)
+
+    assm, _, _ = ui_ctrl.submit_intake(
+        user_request="Assess 10.0.0.20",
+        title="Exact Match Assessment",
+        scope_id="scope-val-02",
+    )
+
+    ev = Evidence(
+        id="ev-01",
+        source_tool="nmap",
+        run_id="run-1",
+        artifact_id="art-1",
+        locator="/p80",
+        raw_sha256="abc",
+        snippet="Open HTTP",
+        observed_at=now,
+        origin="live",
+    )
+    f_1 = Finding(
+        id="F-1",
+        title="Finding 1",
+        asset=Asset(host="10.0.0.20", port=80),
+        sources=["nmap"],
+        evidence=[ev],
+        tool_severity="low",
+        confidence="medium",
+        status="suspected",
+        status_reason="Heuristic",
+        correlation_key="ck-1",
+        first_seen=now,
+        last_seen=now,
+    )
+    f_10 = Finding(
+        id="F-10",
+        title="Finding 10",
+        asset=Asset(host="10.0.0.20", port=80),
+        sources=["nmap"],
+        evidence=[ev],
+        tool_severity="high",
+        confidence="medium",
+        status="suspected",
+        status_reason="Heuristic",
+        correlation_key="ck-10",
+        first_seen=now,
+        last_seen=now,
+    )
+    ui_ctrl.repository.save_finding(assm.id, f_1)
+    ui_ctrl.repository.save_finding(assm.id, f_10)
+
+    # Request validation for F-10 FIRST
+    req_10 = ui_ctrl.request_validation(
+        assessment_id=assm.id,
+        finding_id=f_10.id,
+        requested_by="analyst_alice",
+        reason="Verify finding 10",
+        potential_impact="Low",
+    )
+
+    # Substring match would mistakenly return req_10 for F-1!
+    app_f1 = ui_ctrl.get_validation_approval_for_finding(assm.id, "F-1")
+    assert app_f1 is None  # Must NOT match F-10
+
+    # Request validation for F-1
+    req_1 = ui_ctrl.request_validation(
+        assessment_id=assm.id,
+        finding_id=f_1.id,
+        requested_by="analyst_alice",
+        reason="Verify finding 1",
+        potential_impact="Low",
+    )
+
+    app_f1 = ui_ctrl.get_validation_approval_for_finding(assm.id, "F-1")
+    assert app_f1 is not None
+    assert app_f1[0].approval_id == req_1.approval_id
+
+    app_f10 = ui_ctrl.get_validation_approval_for_finding(assm.id, "F-10")
+    assert app_f10 is not None
+    assert app_f10[0].approval_id == req_10.approval_id
+
+
+def test_ui_validation_finality_retained_across_fresh_controller(
+    db_path: Path, artifacts_dir: Path
+) -> None:
+    """Fresh UIController must respect existing rejection finality from repository."""
+    ctrl1 = UIController(db_path=db_path, artifacts_dir=artifacts_dir, llm_provider="none")
+    now = datetime.now(UTC)
+    scope = Scope(
+        id="scope-val-03",
+        name="Finality Lab",
+        authorization_reference="AUTH-VAL-3",
+        targets=["10.0.0.30"],
+        window_start=now - timedelta(hours=1),
+        window_end=now + timedelta(hours=12),
+    )
+    ctrl1.register_scope(scope)
+    assm, _, _ = ctrl1.submit_intake(
+        user_request="Assess 10.0.0.30",
+        title="Finality Assessment",
+        scope_id="scope-val-03",
+    )
+    ev = Evidence(
+        id="ev-01",
+        source_tool="nmap",
+        run_id="run-1",
+        artifact_id="art-1",
+        locator="/p80",
+        raw_sha256="abc",
+        snippet="Open HTTP",
+        observed_at=now,
+        origin="live",
+    )
+    finding = Finding(
+        id="FIND-FIN-01",
+        title="Dangerous Finding",
+        asset=Asset(host="10.0.0.30", port=80),
+        sources=["nmap"],
+        evidence=[ev],
+        tool_severity="critical",
+        confidence="medium",
+        status="suspected",
+        status_reason="Heuristic",
+        correlation_key="ck-fin",
+        first_seen=now,
+        last_seen=now,
+    )
+    ctrl1.repository.save_finding(assm.id, finding)
+
+    req = ctrl1.request_validation(
+        assessment_id=assm.id,
+        finding_id=finding.id,
+        requested_by="analyst_alice",
+        reason="Verify dangerous flaw",
+        potential_impact="High",
+    )
+
+    # Reject request in controller 1
+    ctrl1.decide_validation(
+        assessment_id=assm.id,
+        approval_id=req.approval_id,
+        decision="rejected",
+        decided_by="lead_bob",
+        reason="Too dangerous for lab environment",
+    )
+
+    # Now simulate a fresh session/process by creating controller 2
+    ctrl2 = UIController(db_path=db_path, artifacts_dir=artifacts_dir, llm_provider="none")
+    # Trying to approve the rejected request in fresh controller must fail due to finality
+    with pytest.raises(ValueError, match="final \\(rejected\\) and cannot be modified"):
+        ctrl2.decide_validation(
+            assessment_id=assm.id,
+            approval_id=req.approval_id,
+            decision="approved",
+            decided_by="rogue_operator",
+            reason="Attempt override",
+        )
+
+
+def test_ui_validation_rejects_unbound_and_reused_approvals(ui_ctrl: UIController) -> None:
+    """UIController.record_validation rejects unbound approvals and reused approvals."""
+    now = datetime.now(UTC)
+    scope = Scope(
+        id="scope-val-04",
+        name="Binding Lab",
+        authorization_reference="AUTH-VAL-4",
+        targets=["10.0.0.40"],
+        window_start=now - timedelta(hours=1),
+        window_end=now + timedelta(hours=12),
+    )
+    ui_ctrl.register_scope(scope)
+    assm, _, _ = ui_ctrl.submit_intake(
+        user_request="Assess 10.0.0.40",
+        title="Binding Assessment",
+        scope_id="scope-val-04",
+    )
+    ev = Evidence(
+        id="ev-01",
+        source_tool="nmap",
+        run_id="run-1",
+        artifact_id="art-1",
+        locator="/p80",
+        raw_sha256="abc",
+        snippet="Open HTTP",
+        observed_at=now,
+        origin="live",
+    )
+    f_a = Finding(
+        id="FIND-A",
+        title="Finding A",
+        asset=Asset(host="10.0.0.40", port=80),
+        sources=["nmap"],
+        evidence=[ev],
+        tool_severity="high",
+        confidence="medium",
+        status="suspected",
+        status_reason="Heuristic",
+        correlation_key="ck-a",
+        first_seen=now,
+        last_seen=now,
+    )
+    f_b = Finding(
+        id="FIND-B",
+        title="Finding B",
+        asset=Asset(host="10.0.0.40", port=80),
+        sources=["nmap"],
+        evidence=[ev],
+        tool_severity="high",
+        confidence="medium",
+        status="suspected",
+        status_reason="Heuristic",
+        correlation_key="ck-b",
+        first_seen=now,
+        last_seen=now,
+    )
+    ui_ctrl.repository.save_finding(assm.id, f_a)
+    ui_ctrl.repository.save_finding(assm.id, f_b)
+
+    req_a = ui_ctrl.request_validation(
+        assessment_id=assm.id,
+        finding_id=f_a.id,
+        requested_by="analyst_alice",
+        reason="Verify A",
+        potential_impact="Low",
+    )
+    dec_a = ui_ctrl.decide_validation(
+        assessment_id=assm.id,
+        approval_id=req_a.approval_id,
+        decision="approved",
+        decided_by="lead_bob",
+        reason="Approved A",
+    )
+
+    # Attempting to use dec_a for FIND-B must raise PermissionError
+    with pytest.raises(PermissionError, match="Approval does not belong to this finding"):
+        ui_ctrl.record_validation(
+            assessment_id=assm.id,
+            finding_id=f_b.id,
+            approval_decision=dec_a,
+            outcome="succeeded",
+            attested_by="analyst_alice",
+            evidence_bytes=b"proof",
+        )
+
+    # Recording outcome for FIND-A succeeds
+    ui_ctrl.record_validation(
+        assessment_id=assm.id,
+        finding_id=f_a.id,
+        approval_decision=dec_a,
+        outcome="succeeded",
+        attested_by="analyst_alice",
+        evidence_bytes=b"proof",
+    )
+
+    # Attempting to re-record outcome with dec_a on FIND-A raises ValueError
+    with pytest.raises(ValueError, match="already recorded for this approval"):
+        ui_ctrl.record_validation(
+            assessment_id=assm.id,
+            finding_id=f_a.id,
+            approval_decision=dec_a,
+            outcome="succeeded",
+            attested_by="analyst_alice",
+            evidence_bytes=b"proof-2",
+        )
