@@ -10,6 +10,7 @@ Invariants:
 4. Emits real-time lifecycle events via EventBus for Streamlit UI.
 """
 
+import asyncio
 import hashlib
 import logging
 import uuid
@@ -61,7 +62,7 @@ class OrchestrationEngine:
         self.scorer = risk_scorer
         self.event_bus = event_bus or EventBus()
         self._executed_keys: set[str] = set()
-        self._inflight_keys: set[str] = set()
+        self._inflight_tasks: dict[str, asyncio.Task[ExecutionResult]] = {}
 
     def _emit(self, assessment_id: str, event_type: str, payload: dict[str, Any]) -> None:
         self.event_bus.publish(
@@ -87,8 +88,9 @@ class OrchestrationEngine:
         step_id = step.step_id
         idem_key = step.idempotency_key or self.compute_idempotency_key(step, assessment_id=assessment_id)
 
-        # 1. Check idempotency (including concurrently in-flight steps)
-        if idem_key in self._executed_keys or idem_key in self._inflight_keys:
+        # 1. Check idempotency:
+        # If already succeeded in this assessment, skip execution.
+        if idem_key in self._executed_keys:
             self._emit(
                 assessment_id,
                 "step_skipped_duplicate",
@@ -101,6 +103,10 @@ class OrchestrationEngine:
                 exit_code=0,
                 duration_seconds=0.0,
             )
+
+        # If currently running concurrently, await the in-flight task so we report its actual outcome
+        if idem_key in self._inflight_tasks:
+            return await self._inflight_tasks[idem_key]
 
         # 2. Check policy gate authorization
         raw_port = step.params.get("port")
@@ -172,13 +178,16 @@ class OrchestrationEngine:
                 duration_seconds=0.0,
             )
 
-        # 4. Execute step via ToolRunner with in-flight concurrency protection
-        self._inflight_keys.add(idem_key)
+        # 4. Execute step via ToolRunner with in-flight task tracking
         self._emit(assessment_id, "step_started", {"step_id": step_id, "tool": step.tool})
+        task = asyncio.current_task()
+        if task is not None:
+            self._inflight_tasks[idem_key] = task
+
         try:
             exec_result = await self.runner.run(step, assessment_id=assessment_id)
         finally:
-            self._inflight_keys.discard(idem_key)
+            self._inflight_tasks.pop(idem_key, None)
 
         # Register idempotency key only after successful run so failures can be retried
         if exec_result.status == "succeeded":
