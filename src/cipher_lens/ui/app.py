@@ -30,8 +30,23 @@ st.set_page_config(
 )
 
 
+def _load_env_file() -> None:
+    """Loads environment variables from .env if present and not already set."""
+    env_path = Path(".env")
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip("'\"")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+
+
 def get_controller() -> UIController:
     """Initializes or retrieves the persistent UIController instance in session state."""
+    _load_env_file()
     if "controller" not in st.session_state:
         db_path = os.environ.get("CIPHER_LENS_DB", "local_data/cipher_lens.db")
         artifacts_dir = os.environ.get("CIPHER_LENS_ARTIFACTS", "local_data/artifacts")
