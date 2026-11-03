@@ -372,8 +372,9 @@ def render_execution_page(ctrl: UIController) -> None:
     if not steps:
         st.caption("No steps generated yet for this assessment.")
     else:
-        for s in steps:
-            with st.expander(f"Step `{s.step_id}`: {s.tool} on {s.target} ({s.action_class.value})"):
+        for s, status in steps:
+            with st.expander(f"Step `{s.step_id}`: {s.tool} on {s.target} [{status.upper()}]"):
+                st.write(f"**Status:** `{status.upper()}` | **Action Class:** `{s.action_class.value.upper()}`")
                 st.write(f"**Rationale:** {s.rationale}")
                 st.write(f"**Expected Outcome:** {s.expected_outcome}")
                 st.write(f"**Triggered By:** `{s.triggered_by}`")
