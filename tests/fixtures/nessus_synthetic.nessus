@@ -1,0 +1,30 @@
+<?xml version="1.0" ?>
+<!-- SYNTHETIC TEST FIXTURE: origin=sample, created=2026-11-03, created_for=Cipher-Lens Day 3 B10 testing -->
+<!-- DO NOT USE AS REAL SCAN EVIDENCE. Not from any live target. -->
+<NessusClientData_v2>
+  <Report name="Synthetic Nessus Scan">
+    <ReportHost name="10.0.0.5">
+      <HostProperties>
+        <tag name="host-ip">10.0.0.5</tag>
+        <tag name="host-fqdn">lab-target.local</tag>
+      </HostProperties>
+      <ReportItem port="80" svc_name="www" protocol="tcp" severity="3" pluginID="12345" pluginName="Apache HTTP Server Path Traversal" pluginFamily="Web Servers">
+        <description>The remote web server is vulnerable to path traversal.</description>
+        <solution>Upgrade to the latest Apache release.</solution>
+        <plugin_output>Output from Nessus plugin: found vulnerable path</plugin_output>
+        <cve>CVE-2021-41773</cve>
+        <cvss_base_score>7.5</cvss_base_score>
+        <cvss_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N</cvss_vector>
+      </ReportItem>
+    </ReportHost>
+    <ReportHost name="192.168.1.100">
+      <HostProperties>
+        <tag name="host-ip">192.168.1.100</tag>
+      </HostProperties>
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="2" pluginID="67890" pluginName="SSL Weak Cipher">
+        <description>Out of scope host finding.</description>
+      </ReportItem>
+    </ReportHost>
+  </Report>
+</NessusClientData_v2>
+

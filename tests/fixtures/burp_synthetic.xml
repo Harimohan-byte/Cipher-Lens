@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC TEST FIXTURE: origin=sample, created=2026-11-03, created_for=Cipher-Lens Day 3 B10 testing -->
+<!-- DO NOT USE AS REAL SCAN EVIDENCE. Not from any live target. -->
+<issues burpVersion="2026.1" exportTime="Tue Nov 03 00:00:00 UTC 2026">
+  <issue>
+    <name>Cross-site scripting (reflected)</name>
+    <host ip="10.0.0.5">http://lab-target.local</host>
+    <path>/search</path>
+    <location>/search?q=test</location>
+    <severity>High</severity>
+    <confidence>Certain</confidence>
+    <issueDetail>Synthetic XSS description with &lt;b&gt;bold text&lt;/b&gt;</issueDetail>
+    <issueBackground>Synthetic XSS background</issueBackground>
+    <remediationDetail>Synthetic remediation recommendation</remediationDetail>
+    <requestresponse>
+      <request base64="false">GET /search?q=test HTTP/1.1
+Host: lab-target.local
+Authorization: Bearer secret-token-12345
+Cookie: session=secret-cookie-value
+
+</request>
+      <response base64="false">HTTP/1.1 200 OK
+Content-Type: text/html
+
+&lt;html&gt;test&lt;/html&gt;</response>
+    </requestresponse>
+  </issue>
+  <issue>
+    <name>Out of scope issue</name>
+    <host ip="203.0.113.50">https://evil-unauthorized.com</host>
+    <path>/login</path>
+    <location>/login</location>
+    <severity>Medium</severity>
+    <confidence>Firm</confidence>
+    <issueDetail>Out of scope issue detail</issueDetail>
+  </issue>
+</issues>
+
