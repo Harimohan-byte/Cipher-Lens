@@ -166,6 +166,55 @@ class AuditLog:
 
         return event
 
+    def query(
+        self,
+        assessment_id: str | None = None,
+        event_type: str | None = None,
+        actor: str | None = None,
+        limit: int | None = None,
+    ) -> list[AuditEvent]:
+        """Queries audit events by assessment_id, event_type, and/or actor in insertion order."""
+        query_sql = "SELECT id, ts, actor, event_type, assessment_id, payload, prev_hash, row_hash FROM audit_log"
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if assessment_id is not None:
+            conditions.append("assessment_id = ?")
+            params.append(assessment_id)
+        if event_type is not None:
+            conditions.append("event_type = ?")
+            params.append(event_type)
+        if actor is not None:
+            conditions.append("actor = ?")
+            params.append(actor)
+
+        if conditions:
+            query_sql += " WHERE " + " AND ".join(conditions)
+
+        query_sql += " ORDER BY id ASC"
+        if limit is not None:
+            query_sql += f" LIMIT {int(limit)}"
+
+        cursor = self.conn.cursor()
+        cursor.execute(query_sql, params)
+        rows = cursor.fetchall()
+        events: list[AuditEvent] = []
+        for r in rows:
+            payload_data = json.loads(r[5]) if r[5] else {}
+            events.append(
+                AuditEvent(
+                    id=r[0],
+                    ts=r[1],
+                    actor=r[2],
+                    event_type=r[3],
+                    assessment_id=r[4],
+                    payload=payload_data,
+                    prev_hash=r[6],
+                    row_hash=r[7],
+                )
+            )
+        return events
+
     def verify_chain(self, expected_head_hash: str | None = None) -> ChainVerification:
         """Verifies the integrity of the entire audit chain.
 

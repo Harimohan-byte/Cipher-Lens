@@ -222,6 +222,79 @@ class PolicyGate:
         self._audit(best_decision, target, effective_port, tool, action_class, assessment_id)
         return best_decision
 
+    def is_target_in_scope(self, target: str) -> Decision:
+        """Evaluates whether a target host/IP is authorized within registered scope without port/tool constraints."""
+        scopes = self.registry.list_all()
+        if not scopes:
+            return Decision(
+                allowed=False,
+                reason="No registered scope found; all scanning actions are blocked",
+                rule_id="NO_SCOPE_REGISTERED",
+            )
+
+        try:
+            parsed = parse_target(target)
+        except ValueError as exc:
+            return Decision(
+                allowed=False,
+                reason=f"Invalid target specification '{target}': {exc}",
+                rule_id="INVALID_TARGET",
+            )
+
+        best_decision = Decision(
+            allowed=False,
+            reason=f"Target '{target}' (host '{parsed.host}') is not in registered scope",
+            rule_id="NOT_IN_SCOPE",
+        )
+
+        for scope in scopes:
+            if not scope.is_valid_at():
+                continue
+
+            # Check exclusions first
+            for exclusion in scope.exclusions:
+                clean_ex = exclusion.strip().rstrip(".").lower()
+                if clean_ex == parsed.host or clean_ex == parsed.raw.strip().rstrip(".").lower():
+                    return Decision(
+                        allowed=False,
+                        reason=f"Target '{parsed.host}' is explicitly excluded in scope '{scope.id}'",
+                        rule_id="EXCLUDED_TARGET",
+                    )
+
+            # Direct match against allowed_targets
+            for allowed in scope.allowed_targets:
+                clean_al = allowed.strip().rstrip(".").lower()
+                if clean_al == parsed.host or clean_al == parsed.raw.strip().rstrip(".").lower():
+                    return Decision(
+                        allowed=True,
+                        reason=f"Target '{parsed.host}' authorized within scope '{scope.id}'",
+                        rule_id="ALLOW_EXACT",
+                    )
+
+            # IP / CIDR check
+            if parsed.is_ip:
+                try:
+                    ip_obj = ipaddress.ip_address(parsed.host)
+                    for exclusion in scope.exclusions:
+                        clean_ex = exclusion.strip().rstrip(".").lower()
+                        if _ip_matches_entry(ip_obj, clean_ex):
+                            return Decision(
+                                allowed=False,
+                                reason=f"Target '{parsed.host}' is explicitly excluded in scope '{scope.id}'",
+                                rule_id="EXCLUDED_TARGET",
+                            )
+                    for allowed in scope.allowed_targets:
+                        if _ip_matches_entry(ip_obj, allowed):
+                            return Decision(
+                                allowed=True,
+                                reason=f"Target '{parsed.host}' authorized within scope '{scope.id}'",
+                                rule_id="ALLOW_CIDR",
+                            )
+                except ValueError:
+                    pass
+
+        return best_decision
+
     def _check_scope(
         self,
         scope: Scope,
