@@ -9,7 +9,7 @@ Invariants:
 """
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -150,8 +150,9 @@ def test_chaos_llm_down_fallback(
         name="Chaos Lab",
         authorization_reference="AUTH-CHAOS",
         targets=["10.0.0.5"],
-        window_start=now,
-        window_end=now,
+        allowed_ports=[80, 443],
+        window_start=now - timedelta(hours=1),
+        window_end=now + timedelta(hours=12),
     )
     registry = ScopeRegistry()
     registry.register(scope)
