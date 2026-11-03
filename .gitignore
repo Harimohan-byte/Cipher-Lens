@@ -40,3 +40,4 @@ Thumbs.db
 *.egg-info/
 build/
 dist/
+.agents/plugins/coderabbit/
