@@ -6,7 +6,7 @@
 **Operating rule:** authorized targets only. Local practice targets while developing; the organizer lab for the final demo. Never scan public, third-party, or unapproved systems.
 <!-- EDIT 1: replace the first four header lines (Project ... Operating rule) with: -->
 **Version:** v2.1 (status and git workflow added in §16; sections 1-15 unchanged except where marked)
-**Status as of 3 Nov 2026:** Day 1, Day 2 & Day 3 COMPLETE. Day 4 in progress (Task A10 LLM layer implemented). See §16.2 for the live tracker.
+**Status as of 3 Nov 2026:** Day 1, Day 2 & Day 3 COMPLETE. Day 4 in progress: Task A10 (LLM Layer), Task A11 (Intake + Adaptive Planner), Tasks B14 (Risk Scorer), B15 (Orchestrator Engine), and B16 (Grounding Validator) COMPLETE. See §16.2 for the live tracker.
 
 ---
 
@@ -621,6 +621,10 @@ Legend: DONE = files exist, tests pass, red-flag scan clean. PARTIAL = some piec
 | A8 persistence | A | DONE | store/repository.py, store/tables.py, models/assessment.py: SQLite repository for assessments, steps, runs, findings, evidence, approvals; resume-from-DB and crash recovery (7 tests) |
 | A9 PDF skeleton | A | DONE | reports/: models.py, canvas.py, generator.py: ReportLab PDF skeleton with 6 required sections, severity chart, numbered canvas, appendices, empty/failure edge cases (5 tests) |
 | A10 LLM layer | A | DONE | planner/: llm.py, sanitize.py, trace.py, cache.py; Dual-Key failover (3.8-Flash + 3.5-Flash-Lite), single-retry validation, budget capping, trace events to SQLite, rule-based fallback (15 tests) |
+| A11 Intake + planner | A | DONE | planner/models.py, intake.py, planner.py, rules_planner.py; AssessmentRequest, PolicyGate scope validation, prompt injection defense, server-side authoritative ActionClass and idempotency, deterministic rule-based progression (11 tests) |
+| B14 Risk scorer | B | DONE | correlate/risk.py, config/risk.yaml; 0-100 risk score, CVSS/EPSS/KEV monotonic boosts, asset exposure, reproducible breakdown (PR #16, #17 merged) |
+| B15 Orchestrator | B | DONE | orchestrator/engine.py, events.py; async state machine, step deduplication, transient retry, approval gating, event queue (PR #16, #17 merged) |
+| B16 Grounding validator | B | DONE | orchestrator/grounding.py; grounding check for report tokens against DB, fake CVE rejection, retry once + deterministic template (PR #16, #17 merged) |
 
 ### 16.3 Git working agreement
 Rules

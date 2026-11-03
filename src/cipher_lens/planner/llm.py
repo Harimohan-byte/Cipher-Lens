@@ -38,6 +38,10 @@ class LlmResponse[T: BaseModel]:
     latency_ms: int = 0
     attempts: int = 1
 
+    @property
+    def source(self) -> Literal["live", "cached", "rule-based"]:
+        return self.label
+
 
 class LlmClient:
     """Enterprise LLM client with dual-key failover, validation retry, and caching."""
