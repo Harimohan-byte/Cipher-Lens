@@ -285,7 +285,7 @@ def test_grounding_validator_rejects_hallucinated_cve():
 
 
 def test_grounding_validator_boundary_check():
-    """Checks that finding ID prefixes like VAPT-00012 don't match VAPT-0001."""
+    """Checks that finding IDs with different lengths like VAPT-00012 fail validation when not in known_ids."""
     findings = [
         Finding(
             id="VAPT-0001",
@@ -317,10 +317,11 @@ def test_grounding_validator_boundary_check():
         )
     ]
     validator = GroundingValidator()
-    # VAPT-00012 has 5 digits - should NOT match VAPT-0001
+    # VAPT-00012 is extracted and rejected because it does not match known VAPT-0001
     text = "Referencing VAPT-00012 in report"
     res = validator.validate(text, findings)
-    assert res.is_valid is True  # VAPT-00012 is not recognized as a 4-digit VAPT ID pattern
+    assert res.is_valid is False
+    assert "VAPT-00012" in res.hallucinated_finding_ids
 
 
 def test_grounding_validator_checks_counts():
