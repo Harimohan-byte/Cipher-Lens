@@ -129,10 +129,9 @@ def test_importers_xxe_rejection():
             importer.parse(malicious_xml, make_evidence("test"))
 
 
-def test_importers_reject_live_run():
+@pytest.mark.asyncio
+async def test_importers_reject_live_run():
     """All import-only adapters reject live run() with NotImplementedError."""
-    import asyncio
-
     from cipher_lens.adapters.base import ExecutionContext
     from cipher_lens.models.plan import ActionClass, PlanStep
     from cipher_lens.store.artifacts import ArtifactStore
@@ -151,5 +150,5 @@ def test_importers_reject_live_run():
 
     for imp in [NessusImporter(), OpenvasImporter(), BurpImporter()]:
         with pytest.raises(NotImplementedError, match="import-only"):
-            asyncio.run(imp.run(step, ctx))
+            await imp.run(step, ctx)
 

@@ -16,8 +16,9 @@ import streamlit as st
 
 from cipher_lens.models.plan import ActionClass
 from cipher_lens.policy.scope import Scope
+from cipher_lens.reports.assembly import ReportAssembler
 from cipher_lens.reports.generator import PdfReportGenerator
-from cipher_lens.reports.models import ReportData
+from cipher_lens.ui.findings import render_findings_view
 from cipher_lens.ui.state import UIController
 
 # Configure page layout and title
@@ -414,7 +415,7 @@ def render_execution_page(ctrl: UIController) -> None:
 
 
 def render_findings_page(ctrl: UIController) -> None:
-    """Page 4: Findings, 0-100 Risk Prioritization, and CISA KEV Badges (Task B14)."""
+    """Page 4: Findings, 0-100 Risk Prioritization, and CISA KEV Badges (Task B14 & B17)."""
     st.header("4. Correlated Findings & Risk Prioritization")
     st.write(
         "Findings prioritized by reproducible 0–100 risk scoring with CISA KEV exploitability boosts. "
@@ -429,190 +430,7 @@ def render_findings_page(ctrl: UIController) -> None:
     assm_map = {a.id: f"{a.title} ({a.id})" for a in assessments}
     active_id = st.selectbox("Select Assessment", list(assm_map.keys()), format_func=lambda k: assm_map[k])
 
-    findings = ctrl.list_findings(active_id)
-    if not findings:
-        st.info(f"No findings recorded yet for assessment `{active_id}`. Once tools execute or reports are imported, findings appear here.")
-    else:
-        for f in findings:
-            with st.expander(f"[{f.tool_severity.upper() if f.tool_severity else 'FINDING'}] {f.title} ({f.id})", expanded=True):
-                col_f1, col_f2 = st.columns([3, 1])
-                with col_f1:
-                    st.markdown(f"**Asset:** `{f.asset.host}:{f.asset.port or 'N/A'}`")
-                    st.markdown(f"**CVEs:** {', '.join(f.cve) if f.cve else 'None reported'}")
-                    st.markdown(f"**CWEs:** {', '.join(f.cwe) if f.cwe else 'None reported'}")
-                    st.markdown(f"**Status:** `{f.status.upper()}` | **Confidence:** `{f.confidence.upper()}`")
-                with col_f2:
-                    if f.risk:
-                        st.metric("Risk Score", f"{f.risk.total:.1f}/100", f.risk.band.upper())
-                    else:
-                        st.metric("Severity", f.tool_severity.upper() if f.tool_severity else "HIGH")
-
-                st.markdown("---")
-                # AGENTS.md Rule 4: Observed Evidence vs AI Inference strictly separated
-                col_ev, col_inf = st.columns(2)
-                with col_ev:
-                    st.subheader("🔍 Observed Scanner Evidence")
-                    if f.evidence:
-                        for ev in f.evidence:
-                            st.caption(f"Source Tool: `{ev.source_tool}` | Locator: `{ev.locator}` | Origin: `{ev.origin}`")
-                            st.code(ev.snippet or "(Raw snippet empty)", language="text")
-                            st.caption(f"SHA-256: `{ev.raw_sha256}`")
-                    else:
-                        st.caption("No raw evidence records attached.")
-
-                with col_inf:
-                    st.subheader("🤖 AI Inferences (Untrusted)")
-                    if f.inferences:
-                        for inf in f.inferences:
-                            st.info(f"**Inference:** {inf.summary}\n\n*Confidence:* {inf.confidence:.2f}")
-                    else:
-                        st.caption("No AI inferences attached to this finding.")
-
-                st.markdown("---")
-                st.subheader("🧪 Manual Lab Validation (Task A13)")
-                st.info(
-                    "🛡️ **Safety Policy Notice (AGENTS.md & Master Plan §0 & §7):** "
-                    "The Cipher-Lens platform **NEVER** launches Metasploit or automated exploit payloads. "
-                    "The analyst conducts manual testing strictly in the authorized lab and attests evidence here."
-                )
-
-                if f.validation:
-                    val = f.validation
-                    badge_color = {
-                        "succeeded": "green",
-                        "failed": "red",
-                        "inconclusive": "orange",
-                    }.get(val.outcome, "gray")
-                    st.markdown(f"**Validation Status:** :{badge_color}[**{val.outcome.upper()}**]")
-                    st.markdown(f"**Attested By:** `{val.attested_by}` | **Recorded At:** `{val.recorded_at.isoformat()}`")
-                    if val.evidence_artifact_id:
-                        st.markdown(f"**Attached Evidence Artifact:** `{val.evidence_artifact_id}`")
-                    st.caption(f"Status Note: {f.status_reason}")
-                else:
-                    app_record = ctrl.get_validation_approval_for_finding(active_id, f.id)
-                    if app_record is None:
-                        # Step 1: Request Validation
-                        with st.form(f"request_val_form_{f.id}"):
-                            st.markdown("##### Request Validation Approval Gate")
-                            v_analyst = st.text_input("Analyst Requesting", value="analyst_operator", key=f"req_by_{f.id}")
-                            v_reason = st.text_input(
-                                "Testing Rationale / Hypothesis",
-                                value=f"Manual lab reproduction test for finding {f.title}",
-                                key=f"req_reason_{f.id}",
-                            )
-                            v_impact = st.text_input(
-                                "Potential Impact in Lab",
-                                value="Read-only HTTP inspection; minimal load on target",
-                                key=f"req_impact_{f.id}",
-                            )
-                            req_submit = st.form_submit_button("Request Validation Gate 🔒", type="primary")
-                            if req_submit:
-                                ctrl.request_validation(
-                                    assessment_id=active_id,
-                                    finding_id=f.id,
-                                    requested_by=v_analyst,
-                                    reason=v_reason,
-                                    potential_impact=v_impact,
-                                )
-                                st.success("Validation approval requested! Gate is pending.")
-                                st.rerun()
-                    else:
-                        req, dec = app_record
-                        if dec is None:
-                            # Step 2: Pending Approval Gate
-                            st.warning(f"⏳ **Validation Pending Human Gate** (Approval ID: `{req.approval_id}`)")
-                            st.markdown(f"**Requested Target:** `{req.target}` | **Rationale:** {req.rationale}")
-                            with st.form(f"gate_val_form_{req.approval_id}"):
-                                g_analyst = st.text_input("Approving Lead", value="lead_analyst", key=f"gate_analyst_{req.approval_id}")
-                                g_reason = st.text_input("Decision Reason", value="Approved for safe manual execution in lab", key=f"gate_reason_{req.approval_id}")
-                                col_g1, col_g2 = st.columns(2)
-                                with col_g1:
-                                    approve_val = st.form_submit_button("Approve Validation Gate ✅", type="primary")
-                                with col_g2:
-                                    reject_val = st.form_submit_button("Reject Validation Gate ❌")
-
-                                if approve_val:
-                                    ctrl.decide_validation(
-                                        assessment_id=active_id,
-                                        approval_id=req.approval_id,
-                                        decision="approved",
-                                        decided_by=g_analyst,
-                                        reason=g_reason,
-                                    )
-                                    st.success("Validation gate approved! Proceed to record outcome.")
-                                    st.rerun()
-                                elif reject_val:
-                                    ctrl.decide_validation(
-                                        assessment_id=active_id,
-                                        approval_id=req.approval_id,
-                                        decision="rejected",
-                                        decided_by=g_analyst,
-                                        reason=g_reason,
-                                    )
-                                    st.error("Validation gate rejected. Lab execution blocked.")
-                                    st.rerun()
-                        elif dec.decision == "rejected":
-                            st.error(
-                                f"❌ **Validation Gate Denied** by `{dec.decided_by}`: {dec.reason}\n\n"
-                                "Per safety policy, outcome recording is strictly blocked for rejected validation gates."
-                            )
-                        elif dec.decision == "approved":
-                            # Step 3: Record Outcome & Attestation
-                            st.success(f"✅ **Validation Gate Approved** by `{dec.decided_by}`. Ready for analyst lab execution attestation.")
-                            with st.form(f"outcome_val_form_{f.id}"):
-                                st.markdown("##### Record Validation Outcome & Artifact Attestation")
-                                out_choice = st.selectbox(
-                                    "Outcome",
-                                    options=["succeeded", "failed", "inconclusive"],
-                                    format_func=lambda o: {
-                                        "succeeded": "🟢 Succeeded (Confirms finding, requires attached artifact)",
-                                        "failed": "🔴 Failed (Marks finding as False Positive)",
-                                        "inconclusive": "🟡 Inconclusive (Leaves finding as Suspected)",
-                                    }[o],
-                                    key=f"out_choice_{f.id}",
-                                )
-                                out_analyst = st.text_input("Attesting Analyst", value="analyst_operator", key=f"out_analyst_{f.id}")
-                                out_upload = st.file_uploader(
-                                    "Attach Evidence Artifact (terminal log, output file, etc.)",
-                                    key=f"out_file_{f.id}",
-                                )
-                                out_text = st.text_area(
-                                    "Or Paste Raw Terminal / Tool Output Evidence",
-                                    placeholder="Paste raw response, curl output, or terminal session log here...",
-                                    key=f"out_text_{f.id}",
-                                )
-                                out_attest = st.checkbox(
-                                    "I attest that this validation was executed manually in an authorized lab and this evidence is authentic (AGENTS.md Rule 3 & 4)",
-                                    key=f"out_attest_{f.id}",
-                                )
-                                submit_outcome = st.form_submit_button("Record Attested Outcome 📝", type="primary")
-
-                                if submit_outcome:
-                                    if not out_attest:
-                                        st.error("You must check the attestation box to certify authentic lab evidence.")
-                                    else:
-                                        evidence_payload: bytes | str | None = None
-                                        if out_upload is not None:
-                                            evidence_payload = out_upload.getvalue()
-                                        elif out_text.strip():
-                                            evidence_payload = out_text.strip()
-
-                                        if out_choice == "succeeded" and not evidence_payload:
-                                            st.error("A successful validation outcome strictly requires an attached evidence artifact (Master Plan §7 A13).")
-                                        else:
-                                            try:
-                                                ctrl.record_validation(
-                                                    assessment_id=active_id,
-                                                    finding_id=f.id,
-                                                    approval_decision=dec,
-                                                    outcome=out_choice,  # type: ignore[arg-type]
-                                                    attested_by=out_analyst,
-                                                    evidence_bytes=evidence_payload,
-                                                )
-                                                st.success(f"Validation outcome recorded! Finding is now {f.status}.")
-                                                st.rerun()
-                                            except Exception as exc:
-                                                st.error(f"Failed to record validation: {exc}")
+    render_findings_view(ctrl, active_id)
 
 
 def render_audit_trace_page(ctrl: UIController) -> None:
@@ -734,19 +552,10 @@ def render_reports_page(ctrl: UIController) -> None:
                 reports_dir.mkdir(parents=True, exist_ok=True)
                 pdf_output_path = reports_dir / f"assessment_{assm.id}.pdf"
 
+                assembler = ReportAssembler(ctrl)
+                report_data = assembler.assemble_report(active_id)
+
                 generator = PdfReportGenerator()
-                report_data = ReportData(
-                    assessment=assm,
-                    scope_target=assm.target,
-                    scope_reference=assm.scope_id or "Authorized Practice Target",
-                    testing_window="Authorized practice testing window",
-                    findings=findings,
-                    limitations=[
-                        "Assessment conducted inside authorized educational practice target environment.",
-                        "All scanner outputs and raw evidence hashes preserved with SHA-256 integrity.",
-                    ],
-                    audit_event_count=len(ctrl.get_audit_events(assm.id)),
-                )
                 generator.generate_to_file(report_data, pdf_output_path)
 
                 st.success(f"✅ Report generated successfully at `{pdf_output_path}`!")
