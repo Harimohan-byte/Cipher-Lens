@@ -9,7 +9,7 @@
 
 ### 1.1 Prerequisites
 - **Operating System:** Windows 10/11, macOS, or Linux.
-- **Python:** Python 3.12 (recommended) or Python 3.13.
+- **Python:** Python 3.12 (strictly required across all development, test, and CI environments per AGENTS.md).
 - **Package Manager:** `pip` or `uv`.
 - **Target Environment:** Authorized practice targets running locally (e.g. Docker Juice Shop or DVWA).
 
@@ -40,7 +40,7 @@ cp .env.example .env
 ```
 Key configuration parameters:
 ```ini
-# LLM Providers: gemini | offline
+# LLM Providers: gemini | none (or offline for deterministic rule-based planning)
 LLM_PROVIDER=gemini
 GEMINI_API_KEY_PRIMARY=your_primary_gemini_key
 GEMINI_API_KEY_SECONDARY=your_secondary_failover_key
@@ -137,7 +137,7 @@ Cipher-Lens incorporates fault injection toggles on Page 3 to test platform resi
 | `slow_nmap` | Induces artificial latency exceeding step timeout. | Process group is cleanly killed (`taskkill /F /T` or `killpg`); partial output is recorded. |
 | `malformed_xml` | Injects corrupt or truncated XML into parser. | `defusedxml` rejects input cleanly without crashing; error is logged in step run. |
 | `llm_down` | Simulates Google Gemini API outage / 429 quota exhaustion. | Dual-key failover attempts secondary key; upon complete outage, seamlessly falls back to rule-based planner with a visible UI banner. |
-| `nvd_down` | Simulates NIST NVD / EPSS endpoint failure. | Service falls back to offline SQLite cache and local snapshots without fabricating CVSS scores. |
+| `nvd_down` | Simulates NIST NVD / EPSS endpoint failure. | Service falls back to offline SQLite cache for KEV/EPSS and marks NVD lookups as `enrichment_unavailable` without guessing or fabricating CVSS scores (AGENTS.md Rule 3). |
 
 ---
 
