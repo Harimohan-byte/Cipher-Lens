@@ -30,8 +30,23 @@ st.set_page_config(
 )
 
 
+def _load_env_file() -> None:
+    """Loads environment variables from .env if present and not already set."""
+    env_path = Path(".env")
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip("'\"")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+
+
 def get_controller() -> UIController:
     """Initializes or retrieves the persistent UIController instance in session state."""
+    _load_env_file()
     if "controller" not in st.session_state:
         db_path = os.environ.get("CIPHER_LENS_DB", "local_data/cipher_lens.db")
         artifacts_dir = os.environ.get("CIPHER_LENS_ARTIFACTS", "local_data/artifacts")
@@ -357,8 +372,9 @@ def render_execution_page(ctrl: UIController) -> None:
     if not steps:
         st.caption("No steps generated yet for this assessment.")
     else:
-        for s in steps:
-            with st.expander(f"Step `{s.step_id}`: {s.tool} on {s.target} ({s.action_class.value})"):
+        for s, status in steps:
+            with st.expander(f"Step `{s.step_id}`: {s.tool} on {s.target} [{status.upper()}]"):
+                st.write(f"**Status:** `{status.upper()}` | **Action Class:** `{s.action_class.value.upper()}`")
                 st.write(f"**Rationale:** {s.rationale}")
                 st.write(f"**Expected Outcome:** {s.expected_outcome}")
                 st.write(f"**Triggered By:** `{s.triggered_by}`")

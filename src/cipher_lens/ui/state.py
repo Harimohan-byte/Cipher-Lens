@@ -164,7 +164,7 @@ class UIController:
         evidence_list = self.repository.list_evidence(assessment_id)
         findings = self.repository.list_findings(assessment_id)
         existing_steps = self.repository.get_steps(assessment_id)
-        done_steps = [s.idempotency_key for s in existing_steps if s.idempotency_key]
+        done_steps = [s.idempotency_key for s, _ in existing_steps if s.idempotency_key]
 
         state = StateSummary(
             scope_target=assm.target,
