@@ -41,7 +41,7 @@ Every decision that changes how we build goes here with a date and a reason. New
 | 2026-11-03 | Chaos engineering fault switches (`kill_zap_mid_scan`, `slow_nmap`, `malformed_xml`, `llm_down`, `nvd_down`) simulate failure modes; offline replay mode re-runs recorded artifacts through the real correlation and scoring pipeline with origin='replayed' labels | AGENTS.md Rule 13 & Master Plan A14: offline resilience and honest failure transparency |
 | 2026-11-03 | Findings UI view integrates multi-attribute filtering, sorting, OWASP Top 10 standards mapping via `config/mappings.yaml`, and atomic triage override transactions committed alongside hash-chained audit events | AGENTS.md Rule 7, 14 & Master Plan B17: auditable human triage |
 | 2026-11-03 | ReportAssembler aggregates real assessment records, tool runs, evidence index with SHA-256 digests, and grounded summaries, disclosing active chaos switches in limitations | AGENTS.md Rule 3, 4, 8, 13 & Master Plan B18: grounded NIST SP 800-115 report assembly |
-| 2026-11-04 | Day 6 Release Hardening: Comprehensive architecture specification, operations runbook, license compliance verification, and end-to-end golden run rehearsal linking findings back to raw SHA-256 evidence | Master Plan A15, B19, B20: production release hardening and QA sweep |
+| 2026-11-03 | Day 6 Release Hardening: Comprehensive architecture specification, operations runbook, license compliance verification, and end-to-end golden run rehearsal linking findings back to raw SHA-256 evidence | Master Plan A15, B19, B20: production release hardening and QA sweep |
 
 
 ## Open items to fill in

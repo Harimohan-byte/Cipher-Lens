@@ -6,7 +6,7 @@
 **Operating rule:** authorized targets only. Local practice targets while developing; the organizer lab for the final demo. Never scan public, third-party, or unapproved systems.
 <!-- EDIT 1: replace the first four header lines (Project ... Operating rule) with: -->
 **Version:** v2.2 (Day 1-6 complete, release hardening & golden run verified)
-**Status as of 4 Nov 2026:** Day 1 through Day 6 ALL COMPLETE (A1-A15, B1-B20). 244 tests passing, zero lint errors, golden run verified, release tag v1.0.0 ready. See §16.2 for the live tracker.
+**Status as of 3 Nov 2026:** Day 1 through Day 6 ALL COMPLETE (A1-A15, B1-B20). 244 tests passing, zero lint errors, golden run verified, release tag v1.0.0 ready. See §16.2 for the live tracker.
 
 ---
 

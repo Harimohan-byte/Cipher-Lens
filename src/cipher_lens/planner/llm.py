@@ -137,12 +137,12 @@ class LlmClient:
         )
 
         # 1. Deterministic Rule-Based Provider Bypass
-        if self.provider == "none":
+        if self.provider in ("none", "offline"):
             if fallback_factory is not None:
                 data = fallback_factory()
                 write_llm_trace(
                     conn=self.db_conn,
-                    provider="none",
+                    provider=self.provider,
                     model="deterministic",
                     prompt_hash=prompt_hash,
                     input_summary=clean_user,

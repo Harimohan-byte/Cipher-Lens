@@ -16,7 +16,7 @@ The following table documents all direct Python dependencies used by Cipher-Lens
 | `reportlab` | `>=4.1.0,<5.0.0` | BSD License | NIST SP 800-115 PDF document generation |
 | `httpx` | `>=0.27.0,<1.0.0` | BSD License | Asynchronous HTTP client for ZAP API & enrichment |
 | `google-genai` | `>=0.1.1,<1.0.0` | Apache License 2.0 | Google Gemini LLM API client |
-| `defusedxml` | `>=0.7.1,<1.0.0` | Python Software Foundation | XXE-safe XML parsing for Nmap, Nessus, and Burp |
+| `defusedxml` | `>=0.7.1,<1.0.0` | Python Software Foundation License (PSFL) | XXE-safe XML parsing for Nmap, Nessus, and Burp |
 | `pyyaml` | `>=6.0,<7.0` | MIT License | Configuration loading for risk weights & mappings |
 | `pytest` | `>=8.0.0` | MIT License | Automated test suite execution |
 | `pytest-asyncio` | `>=0.23.0` | Apache License 2.0 | Asynchronous test execution runner |
