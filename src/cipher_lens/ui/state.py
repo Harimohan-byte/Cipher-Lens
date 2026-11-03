@@ -9,11 +9,11 @@ Invariants:
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from cipher_lens.models.assessment import Assessment, AssessmentStatus
 from cipher_lens.models.findings import Finding
-from cipher_lens.models.plan import PlanStep
+from cipher_lens.models.plan import ActionClass, PlanStep
 from cipher_lens.planner.intake import parse_intake
 from cipher_lens.planner.llm import LlmClient
 from cipher_lens.planner.models import AssessmentRequest, PlanProposal, StateSummary
@@ -21,6 +21,11 @@ from cipher_lens.planner.planner import AdaptivePlanner
 from cipher_lens.policy.approvals import ApprovalDecision, ApprovalManager
 from cipher_lens.policy.gate import PolicyGate
 from cipher_lens.policy.scope import Scope, ScopeRegistry
+from cipher_lens.policy.validation import (
+    decide_validation_request,
+    record_validation_outcome,
+    request_validation,
+)
 from cipher_lens.store.artifacts import ArtifactStore
 from cipher_lens.store.audit import AuditEvent, AuditLog, ChainVerification
 from cipher_lens.store.db import connect, init_db
@@ -222,3 +227,98 @@ class UIController:
     def list_findings(self, assessment_id: str) -> list[Finding]:
         """Lists findings associated with an assessment."""
         return self.repository.list_findings(assessment_id)
+
+    def request_validation(
+        self,
+        assessment_id: str,
+        finding_id: str,
+        requested_by: str,
+        reason: str,
+        potential_impact: str,
+    ) -> Any:
+        """Requests human approval for manual lab validation of a finding."""
+        finding = self.repository.get_finding(assessment_id, finding_id)
+        if not finding:
+            raise ValueError(f"Finding '{finding_id}' not found in assessment '{assessment_id}'")
+        req = request_validation(
+            finding=finding,
+            requested_by=requested_by,
+            reason=reason,
+            potential_impact=potential_impact,
+            approval_manager=self.approval_manager,
+            assessment_id=assessment_id,
+        )
+        self.repository.save_approval_request(req)
+        return req
+
+    def decide_validation(
+        self,
+        assessment_id: str,
+        approval_id: str,
+        decision: Literal["approved", "rejected"],
+        decided_by: str,
+        reason: str,
+    ) -> ApprovalDecision:
+        """Records an approval or rejection decision for a manual validation request."""
+        # Ensure approval request exists in memory manager if it was persisted
+        if approval_id not in self.approval_manager._step_requests:
+            app_tuple = self.repository.get_approval(approval_id)
+            if app_tuple:
+                req, _ = app_tuple
+                self.approval_manager._step_requests[req.approval_id] = req
+                self.approval_manager._step_to_approval[(req.assessment_id, req.step_id)] = req.approval_id
+
+        dec = decide_validation_request(
+            approval_id=approval_id,
+            decision=decision,
+            decided_by=decided_by,
+            reason=reason,
+            approval_manager=self.approval_manager,
+            assessment_id=assessment_id,
+        )
+        self.repository.record_approval_decision(dec)
+        return dec
+
+    def get_validation_approval_for_finding(
+        self, assessment_id: str, finding_id: str
+    ) -> tuple[Any, ApprovalDecision | None] | None:
+        """Finds any pending or decided validation approval for a finding."""
+        approvals = self.repository.list_approvals(assessment_id)
+        for req, dec in reversed(approvals):
+            if req.action_class == ActionClass.VALIDATION and finding_id in req.step_id:
+                return req, dec
+        return None
+
+    def get_approval_decision(self, approval_id: str) -> ApprovalDecision | None:
+        """Retrieves an approval decision if already decided."""
+        app = self.repository.get_approval(approval_id)
+        if app:
+            return app[1]
+        return None
+
+    def record_validation(
+        self,
+        assessment_id: str,
+        finding_id: str,
+        approval_decision: ApprovalDecision,
+        outcome: Literal["not_run", "succeeded", "failed", "inconclusive"],
+        attested_by: str,
+        evidence_bytes: bytes | str | None,
+    ) -> Finding:
+        """Records attested manual validation results and updates finding status."""
+        finding = self.repository.get_finding(assessment_id, finding_id)
+        if not finding:
+            raise ValueError(f"Finding '{finding_id}' not found in assessment '{assessment_id}'")
+        updated = record_validation_outcome(
+            finding=finding,
+            approval_decision=approval_decision,
+            outcome=outcome,
+            attested_by=attested_by,
+            evidence_bytes=evidence_bytes,
+            artifact_store=self.artifact_store,
+            audit_log=self.audit_log,
+            assessment_id=assessment_id,
+        )
+        self.repository.save_finding(assessment_id, updated)
+        return updated
+
