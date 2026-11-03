@@ -309,14 +309,14 @@ def render_execution_page(ctrl: UIController) -> None:
 
     # Pending Approvals Gate (Master Plan §5.7 Human-in-the-loop)
     approvals = ctrl.repository.list_approvals(active_id)
-    pending_approvals = [app for app in approvals if getattr(app, "decision", None) is None]
+    pending_approvals = [req for req, dec in approvals if dec is None]
 
     if pending_approvals:
         st.warning("### ⚠️ Actions Awaiting Human Approval")
-        for app in pending_approvals:
-            with st.form(f"approve_gate_{app.approval_id}"):
-                st.write(f"**Action Class:** `{app.action_class}` | **Tool:** `{app.tool}`")
-                st.write(f"**Target:** `{app.target}` | **Reason:** {app.reason}")
+        for req in pending_approvals:
+            with st.form(f"approve_gate_{req.approval_id}"):
+                st.write(f"**Action Class:** `{req.action_class.value.upper()}` | **Tool:** `{req.tool}`")
+                st.write(f"**Target:** `{req.target}` | **Rationale:** {req.rationale}")
                 analyst = st.text_input("Approver Name", value="lead_analyst")
                 col_b1, col_b2 = st.columns(2)
                 with col_b1:
@@ -325,8 +325,9 @@ def render_execution_page(ctrl: UIController) -> None:
                     rej_btn = st.form_submit_button("Reject Action ❌")
 
                 if app_btn:
-                    ctrl.approval_manager.record_decision(
-                        approval_id=app.approval_id,
+                    ctrl.decide_validation(
+                        assessment_id=active_id,
+                        approval_id=req.approval_id,
                         decision="approved",
                         decided_by=analyst,
                         reason="Analyst granted execution approval",
@@ -334,8 +335,9 @@ def render_execution_page(ctrl: UIController) -> None:
                     st.success("Action approved!")
                     st.rerun()
                 elif rej_btn:
-                    ctrl.approval_manager.record_decision(
-                        approval_id=app.approval_id,
+                    ctrl.decide_validation(
+                        assessment_id=active_id,
+                        approval_id=req.approval_id,
                         decision="rejected",
                         decided_by=analyst,
                         reason="Analyst denied execution",
@@ -413,6 +415,152 @@ def render_findings_page(ctrl: UIController) -> None:
                             st.info(f"**Inference:** {inf.summary}\n\n*Confidence:* {inf.confidence:.2f}")
                     else:
                         st.caption("No AI inferences attached to this finding.")
+
+                st.markdown("---")
+                st.subheader("🧪 Manual Lab Validation (Task A13)")
+                st.info(
+                    "🛡️ **Safety Policy Notice (AGENTS.md & Master Plan §0 & §7):** "
+                    "The Cipher-Lens platform **NEVER** launches Metasploit or automated exploit payloads. "
+                    "The analyst conducts manual testing strictly in the authorized lab and attests evidence here."
+                )
+
+                if f.validation:
+                    val = f.validation
+                    badge_color = {
+                        "succeeded": "green",
+                        "failed": "red",
+                        "inconclusive": "orange",
+                    }.get(val.outcome, "gray")
+                    st.markdown(f"**Validation Status:** :{badge_color}[**{val.outcome.upper()}**]")
+                    st.markdown(f"**Attested By:** `{val.attested_by}` | **Recorded At:** `{val.recorded_at.isoformat()}`")
+                    if val.evidence_artifact_id:
+                        st.markdown(f"**Attached Evidence Artifact:** `{val.evidence_artifact_id}`")
+                    st.caption(f"Status Note: {f.status_reason}")
+                else:
+                    app_record = ctrl.get_validation_approval_for_finding(active_id, f.id)
+                    if app_record is None:
+                        # Step 1: Request Validation
+                        with st.form(f"request_val_form_{f.id}"):
+                            st.markdown("##### Request Validation Approval Gate")
+                            v_analyst = st.text_input("Analyst Requesting", value="analyst_operator", key=f"req_by_{f.id}")
+                            v_reason = st.text_input(
+                                "Testing Rationale / Hypothesis",
+                                value=f"Manual lab reproduction test for finding {f.title}",
+                                key=f"req_reason_{f.id}",
+                            )
+                            v_impact = st.text_input(
+                                "Potential Impact in Lab",
+                                value="Read-only HTTP inspection; minimal load on target",
+                                key=f"req_impact_{f.id}",
+                            )
+                            req_submit = st.form_submit_button("Request Validation Gate 🔒", type="primary")
+                            if req_submit:
+                                ctrl.request_validation(
+                                    assessment_id=active_id,
+                                    finding_id=f.id,
+                                    requested_by=v_analyst,
+                                    reason=v_reason,
+                                    potential_impact=v_impact,
+                                )
+                                st.success("Validation approval requested! Gate is pending.")
+                                st.rerun()
+                    else:
+                        req, dec = app_record
+                        if dec is None:
+                            # Step 2: Pending Approval Gate
+                            st.warning(f"⏳ **Validation Pending Human Gate** (Approval ID: `{req.approval_id}`)")
+                            st.markdown(f"**Requested Target:** `{req.target}` | **Rationale:** {req.rationale}")
+                            with st.form(f"gate_val_form_{req.approval_id}"):
+                                g_analyst = st.text_input("Approving Lead", value="lead_analyst", key=f"gate_analyst_{req.approval_id}")
+                                g_reason = st.text_input("Decision Reason", value="Approved for safe manual execution in lab", key=f"gate_reason_{req.approval_id}")
+                                col_g1, col_g2 = st.columns(2)
+                                with col_g1:
+                                    approve_val = st.form_submit_button("Approve Validation Gate ✅", type="primary")
+                                with col_g2:
+                                    reject_val = st.form_submit_button("Reject Validation Gate ❌")
+
+                                if approve_val:
+                                    ctrl.decide_validation(
+                                        assessment_id=active_id,
+                                        approval_id=req.approval_id,
+                                        decision="approved",
+                                        decided_by=g_analyst,
+                                        reason=g_reason,
+                                    )
+                                    st.success("Validation gate approved! Proceed to record outcome.")
+                                    st.rerun()
+                                elif reject_val:
+                                    ctrl.decide_validation(
+                                        assessment_id=active_id,
+                                        approval_id=req.approval_id,
+                                        decision="rejected",
+                                        decided_by=g_analyst,
+                                        reason=g_reason,
+                                    )
+                                    st.error("Validation gate rejected. Lab execution blocked.")
+                                    st.rerun()
+                        elif dec.decision == "rejected":
+                            st.error(
+                                f"❌ **Validation Gate Denied** by `{dec.decided_by}`: {dec.reason}\n\n"
+                                "Per safety policy, outcome recording is strictly blocked for rejected validation gates."
+                            )
+                        elif dec.decision == "approved":
+                            # Step 3: Record Outcome & Attestation
+                            st.success(f"✅ **Validation Gate Approved** by `{dec.decided_by}`. Ready for analyst lab execution attestation.")
+                            with st.form(f"outcome_val_form_{f.id}"):
+                                st.markdown("##### Record Validation Outcome & Artifact Attestation")
+                                out_choice = st.selectbox(
+                                    "Outcome",
+                                    options=["succeeded", "failed", "inconclusive"],
+                                    format_func=lambda o: {
+                                        "succeeded": "🟢 Succeeded (Confirms finding, requires attached artifact)",
+                                        "failed": "🔴 Failed (Marks finding as False Positive)",
+                                        "inconclusive": "🟡 Inconclusive (Leaves finding as Suspected)",
+                                    }[o],
+                                    key=f"out_choice_{f.id}",
+                                )
+                                out_analyst = st.text_input("Attesting Analyst", value="analyst_operator", key=f"out_analyst_{f.id}")
+                                out_upload = st.file_uploader(
+                                    "Attach Evidence Artifact (terminal log, output file, etc.)",
+                                    key=f"out_file_{f.id}",
+                                )
+                                out_text = st.text_area(
+                                    "Or Paste Raw Terminal / Tool Output Evidence",
+                                    placeholder="Paste raw response, curl output, or terminal session log here...",
+                                    key=f"out_text_{f.id}",
+                                )
+                                out_attest = st.checkbox(
+                                    "I attest that this validation was executed manually in an authorized lab and this evidence is authentic (AGENTS.md Rule 3 & 4)",
+                                    key=f"out_attest_{f.id}",
+                                )
+                                submit_outcome = st.form_submit_button("Record Attested Outcome 📝", type="primary")
+
+                                if submit_outcome:
+                                    if not out_attest:
+                                        st.error("You must check the attestation box to certify authentic lab evidence.")
+                                    else:
+                                        evidence_payload: bytes | str | None = None
+                                        if out_upload is not None:
+                                            evidence_payload = out_upload.getvalue()
+                                        elif out_text.strip():
+                                            evidence_payload = out_text.strip()
+
+                                        if out_choice == "succeeded" and not evidence_payload:
+                                            st.error("A successful validation outcome strictly requires an attached evidence artifact (Master Plan §7 A13).")
+                                        else:
+                                            try:
+                                                ctrl.record_validation(
+                                                    assessment_id=active_id,
+                                                    finding_id=f.id,
+                                                    approval_decision=dec,
+                                                    outcome=out_choice,  # type: ignore[arg-type]
+                                                    attested_by=out_analyst,
+                                                    evidence_bytes=evidence_payload,
+                                                )
+                                                st.success(f"Validation outcome recorded! Finding is now {f.status}.")
+                                                st.rerun()
+                                            except Exception as exc:
+                                                st.error(f"Failed to record validation: {exc}")
 
 
 def render_audit_trace_page(ctrl: UIController) -> None:

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from cipher_lens.models.findings import Asset, Evidence, Finding
 from cipher_lens.models.plan import ActionClass
 from cipher_lens.policy.scope import Scope
 from cipher_lens.store.db import connect, init_db
@@ -196,3 +197,117 @@ def test_ui_llm_traces_retrieval(ui_ctrl: UIController) -> None:
     assert traces[0]["model"] == "gemini-3.8-flash"
     assert traces[0]["label"] == "live"
     assert traces[0]["prompt_hash"] == "abc123hash"
+
+
+def test_ui_manual_validation_workflow(ui_ctrl: UIController) -> None:
+    """Task A13: Full manual validation flow through UIController."""
+    now = datetime.now(UTC)
+    scope = Scope(
+        id="scope-val-01",
+        name="Validation Lab",
+        authorization_reference="AUTH-VAL",
+        targets=["10.0.0.10"],
+        window_start=now - timedelta(hours=1),
+        window_end=now + timedelta(hours=12),
+    )
+    ui_ctrl.register_scope(scope)
+
+    assm, _, _ = ui_ctrl.submit_intake(
+        user_request="Assess 10.0.0.10",
+        title="Validation Lab Assessment",
+        scope_id="scope-val-01",
+    )
+
+    ev = Evidence(
+        id="ev-01",
+        source_tool="nikto",
+        run_id="run-1",
+        artifact_id="art-1",
+        locator="/login",
+        raw_sha256="deadbeef1234",
+        snippet="Suspected SQL injection",
+        observed_at=now,
+        origin="live",
+    )
+    finding = Finding(
+        id="FIND-SQLI-01",
+        title="SQL Injection in Login Endpoint",
+        asset=Asset(host="10.0.0.10", port=80, service="http"),
+        sources=["nikto"],
+        evidence=[ev],
+        tool_severity="critical",
+        confidence="medium",
+        status="suspected",
+        status_reason="Automated heuristic match",
+        correlation_key="ck-sqli-login",
+        first_seen=now,
+        last_seen=now,
+    )
+    ui_ctrl.repository.save_finding(assm.id, finding)
+
+    # 1. Analyst requests validation
+    req = ui_ctrl.request_validation(
+        assessment_id=assm.id,
+        finding_id=finding.id,
+        requested_by="analyst_alice",
+        reason="Manual verification of boolean-based SQL injection with sleep(5)",
+        potential_impact="Low - database response delay in lab environment",
+    )
+    assert req.action_class == ActionClass.VALIDATION
+    assert req.approval_id is not None
+
+    # Retrieve approval for finding
+    approval_tuple = ui_ctrl.get_validation_approval_for_finding(assm.id, finding.id)
+    assert approval_tuple is not None
+    app_req, app_dec = approval_tuple
+    assert app_req.approval_id == req.approval_id
+    assert app_dec is None  # pending
+
+    # 2. Decision: Approve
+    decision = ui_ctrl.decide_validation(
+        assessment_id=assm.id,
+        approval_id=req.approval_id,
+        decision="approved",
+        decided_by="lead_bob",
+        reason="Manual lab verification approved",
+    )
+    assert decision.decision == "approved"
+
+    # 3. Successful outcome without artifact is blocked
+    with pytest.raises(ValueError, match="requires an attached output artifact"):
+        ui_ctrl.record_validation(
+            assessment_id=assm.id,
+            finding_id=finding.id,
+            approval_decision=decision,
+            outcome="succeeded",
+            attested_by="analyst_alice",
+            evidence_bytes=None,
+        )
+
+    # 4. Successful outcome with artifact confirms finding
+    artifact_text = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\nLogin bypass verified: welcome admin\n"
+    updated = ui_ctrl.record_validation(
+        assessment_id=assm.id,
+        finding_id=finding.id,
+        approval_decision=decision,
+        outcome="succeeded",
+        attested_by="analyst_alice",
+        evidence_bytes=artifact_text,
+    )
+    assert updated.status == "confirmed"
+    assert updated.confidence == "high"
+    assert updated.validation is not None
+    assert updated.validation.outcome == "succeeded"
+    assert len(updated.evidence) == 2
+
+    # Check finding retrieved from repository matches
+    persisted = ui_ctrl.repository.get_finding(assm.id, finding.id)
+    assert persisted is not None
+    assert persisted.status == "confirmed"
+    assert persisted.confidence == "high"
+
+    # Verify audit event written
+    events = ui_ctrl.get_audit_events(assessment_id=assm.id)
+    event_types = [e.event_type for e in events]
+    assert "validation_requested" in event_types
+    assert "validation_outcome_recorded" in event_types
