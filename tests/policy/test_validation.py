@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from cipher_lens.models.approvals import ApprovalDecision
 from cipher_lens.models.findings import Asset, Evidence, Finding
 from cipher_lens.models.plan import ActionClass
 from cipher_lens.policy.approvals import ApprovalManager
@@ -324,3 +325,140 @@ def test_inconclusive_validation_keeps_finding_as_suspected(
     assert updated.validation is not None
     assert updated.validation.outcome == "inconclusive"
     assert "inconclusive" in updated.status_reason.lower()
+
+
+def test_validation_rejects_plan_approval_or_unbound_approval(
+    sample_finding: Finding,
+    artifact_store: ArtifactStore,
+    audit_log: AuditLog,
+) -> None:
+    """Plan approvals or approvals for other findings cannot record validation outcomes."""
+    # 1. Plan approval is rejected
+    plan_dec = ApprovalDecision(
+        approval_id="plan_asm-001_20261103120000",
+        decision="approved",
+        decided_by="lead_bob",
+        reason="Plan approved",
+        decided_at=datetime.now(UTC),
+    )
+    with pytest.raises(PermissionError, match="Plan approval cannot be used"):
+        record_validation_outcome(
+            finding=sample_finding,
+            approval_decision=plan_dec,
+            outcome="succeeded",
+            attested_by="analyst_alice",
+            evidence_bytes=b"output",
+            artifact_store=artifact_store,
+            audit_log=audit_log,
+            assessment_id="asm-001",
+        )
+
+    # 2. Approval for a different finding is rejected
+    other_dec = ApprovalDecision(
+        approval_id="appr_asm-001_val-VAPT-OTHER-123456_abcdef",
+        decision="approved",
+        decided_by="lead_bob",
+        reason="Approved for other finding",
+        decided_at=datetime.now(UTC),
+    )
+    with pytest.raises(PermissionError, match="does not belong to finding"):
+        record_validation_outcome(
+            finding=sample_finding,
+            approval_decision=other_dec,
+            outcome="succeeded",
+            attested_by="analyst_alice",
+            evidence_bytes=b"output",
+            artifact_store=artifact_store,
+            audit_log=audit_log,
+            assessment_id="asm-001",
+        )
+
+
+def test_validation_rejects_reused_approval(
+    sample_finding: Finding,
+    approval_manager: ApprovalManager,
+    artifact_store: ArtifactStore,
+    audit_log: AuditLog,
+) -> None:
+    """An approval cannot be reused once an outcome has been recorded."""
+    req = request_validation(
+        finding=sample_finding,
+        requested_by="analyst_alice",
+        reason="Verify vulnerability",
+        potential_impact="Low",
+        approval_manager=approval_manager,
+        assessment_id="asm-001",
+    )
+    decision = decide_validation_request(
+        approval_id=req.approval_id,
+        decision="approved",
+        decided_by="lead_bob",
+        reason="Approved",
+        approval_manager=approval_manager,
+        assessment_id="asm-001",
+    )
+    # First outcome recording succeeds
+    record_validation_outcome(
+        finding=sample_finding,
+        approval_decision=decision,
+        outcome="succeeded",
+        attested_by="analyst_alice",
+        evidence_bytes=b"verified",
+        artifact_store=artifact_store,
+        audit_log=audit_log,
+        assessment_id="asm-001",
+        approval_request=req,
+    )
+
+    # Second outcome recording for the same approval must fail
+    with pytest.raises(ValueError, match="already recorded for this approval"):
+        record_validation_outcome(
+            finding=sample_finding,
+            approval_decision=decision,
+            outcome="succeeded",
+            attested_by="analyst_alice",
+            evidence_bytes=b"re-verified",
+            artifact_store=artifact_store,
+            audit_log=audit_log,
+            assessment_id="asm-001",
+            approval_request=req,
+        )
+
+
+def test_validation_rejects_mismatched_approval_request(
+    sample_finding: Finding,
+    approval_manager: ApprovalManager,
+    artifact_store: ArtifactStore,
+    audit_log: AuditLog,
+) -> None:
+    """Rejects validation if approval request action_class is not VALIDATION or ID mismatches."""
+    req = request_validation(
+        finding=sample_finding,
+        requested_by="analyst_alice",
+        reason="Verify vulnerability",
+        potential_impact="Low",
+        approval_manager=approval_manager,
+        assessment_id="asm-001",
+    )
+    decision = decide_validation_request(
+        approval_id=req.approval_id,
+        decision="approved",
+        decided_by="lead_bob",
+        reason="Approved",
+        approval_manager=approval_manager,
+        assessment_id="asm-001",
+    )
+
+    bad_action_req = req.model_copy(update={"action_class": ActionClass.SCAN})
+    with pytest.raises(PermissionError, match="is not VALIDATION"):
+        record_validation_outcome(
+            finding=sample_finding,
+            approval_decision=decision,
+            outcome="succeeded",
+            attested_by="analyst_alice",
+            evidence_bytes=b"verified",
+            artifact_store=artifact_store,
+            audit_log=audit_log,
+            assessment_id="asm-001",
+            approval_request=bad_action_req,
+        )

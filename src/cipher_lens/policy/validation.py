@@ -8,6 +8,7 @@ Invariants:
 - Denied validation requests cannot proceed.
 """
 
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Literal
@@ -86,6 +87,7 @@ def record_validation_outcome(
     artifact_store: ArtifactStore,
     audit_log: AuditLog | None = None,
     assessment_id: str | None = None,
+    approval_request: ApprovalRequest | None = None,
 ) -> Finding:
     """Attests manual validation results and transitions finding status accordingly.
 
@@ -93,11 +95,39 @@ def record_validation_outcome(
     - Denied validation requests strictly cannot proceed.
     - Succeeded outcome MANDATES an attached evidence artifact (Master Plan §7 A13).
     - Metasploit is NEVER executed by the platform.
+    - Approval must belong to the finding and cannot be reused or misapplied.
     """
     if approval_decision.decision != "approved":
         raise PermissionError(
             f"Cannot record validation outcome for denied or unapproved request '{approval_decision.approval_id}'"
         )
+
+    if (
+        finding.validation is not None
+        and finding.validation.approval_id == approval_decision.approval_id
+    ):
+        raise ValueError("Validation outcome already recorded for this approval")
+
+    if approval_request is not None:
+        if approval_request.approval_id != approval_decision.approval_id:
+            raise PermissionError("Approval decision does not match approval request")
+        if approval_request.action_class != ActionClass.VALIDATION:
+            raise PermissionError(
+                f"Approval action class '{approval_request.action_class}' is not VALIDATION"
+            )
+        if not re.fullmatch(rf"val-{re.escape(finding.id)}-[0-9a-f]{{6}}", approval_request.step_id):
+            raise PermissionError(
+                f"Approval request '{approval_request.approval_id}' does not belong to finding '{finding.id}'"
+            )
+    else:
+        if approval_decision.approval_id.startswith("plan_"):
+            raise PermissionError(
+                "Plan approval cannot be used for validation outcome recording; VALIDATION approval required"
+            )
+        if not re.search(rf"(?:^|_)val-{re.escape(finding.id)}-[0-9a-f]{{6}}(?:_|$)", approval_decision.approval_id):
+            raise PermissionError(
+                f"Approval '{approval_decision.approval_id}' does not belong to finding '{finding.id}'"
+            )
 
     if outcome == "succeeded" and not evidence_bytes:
         raise ValueError(
