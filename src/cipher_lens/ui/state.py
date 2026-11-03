@@ -262,6 +262,51 @@ class UIController:
         """Lists findings associated with an assessment."""
         return self.repository.list_findings(assessment_id)
 
+    def triage_finding(
+        self,
+        assessment_id: str,
+        finding_id: str,
+        new_status: Literal["confirmed", "suspected", "false_positive", "accepted_risk"],
+        rationale: str,
+        actor: str = "security-analyst",
+    ) -> bool:
+        """Atomically updates finding status and records its audit event."""
+        if not rationale.strip():
+            return False
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            finding = self.repository.get_finding(assessment_id, finding_id)
+            if not finding:
+                self.conn.execute("ROLLBACK")
+                return False
+
+            updated_reason = f"{finding.status_reason} | Triaged ({new_status}): {rationale}"
+            self.conn.execute(
+                "UPDATE findings SET status = ?, status_reason = ? WHERE assessment_id = ? AND id = ?",
+                (new_status, updated_reason, assessment_id, finding_id),
+            )
+            event = self.audit_log.append_in_transaction(
+                event_type="finding_triaged",
+                actor=actor,
+                payload={
+                    "finding_id": finding_id,
+                    "title": finding.title,
+                    "old_status": finding.status,
+                    "new_status": new_status,
+                    "rationale": rationale,
+                },
+                assessment_id=assessment_id,
+            )
+            self.conn.execute("COMMIT")
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            raise
+
+        self.audit_log.publish_committed(event)
+        return True
+
     def request_validation(
         self,
         assessment_id: str,
@@ -411,4 +456,3 @@ class UIController:
     def get_limitations(self, assessment_id: str) -> list[str]:
         """Returns recorded limitation gaps for an assessment."""
         return self.chaos_manager.get_limitations(assessment_id)
-

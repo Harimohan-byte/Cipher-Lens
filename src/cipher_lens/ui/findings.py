@@ -76,47 +76,13 @@ def apply_triage_decision(
     actor: str = "security-analyst",
 ) -> bool:
     """Applies a human triage override, updating repository and writing an audit event (AGENTS.md Rule 7)."""
-    if not rationale.strip():
-        return False
-
-    repo = ctrl.repository
-    finding = repo.get_finding(assessment_id, finding_id)
-    if not finding:
-        return False
-
-    old_status = finding.status
-    old_reason = finding.status_reason
-    updated_reason = f"{finding.status_reason} | Triaged ({new_status}): {rationale}"
-
-    conn = ctrl.conn
-    with conn:
-        conn.execute(
-            "UPDATE findings SET status = ?, status_reason = ? WHERE assessment_id = ? AND id = ?",
-            (new_status, updated_reason, assessment_id, finding_id),
-        )
-
-    try:
-        ctrl.audit_log.append(
-            event_type="finding_triaged",
-            actor=actor,
-            payload={
-                "finding_id": finding_id,
-                "title": finding.title,
-                "old_status": old_status,
-                "new_status": new_status,
-                "rationale": rationale,
-            },
-            assessment_id=assessment_id,
-        )
-    except Exception:
-        # Atomic rollback: revert finding status if audit log append fails (AGENTS.md Rule 7)
-        with conn:
-            conn.execute(
-                "UPDATE findings SET status = ?, status_reason = ? WHERE assessment_id = ? AND id = ?",
-                (old_status, old_reason, assessment_id, finding_id),
-            )
-        raise
-    return True
+    return ctrl.triage_finding(
+        assessment_id=assessment_id,
+        finding_id=finding_id,
+        new_status=new_status,
+        rationale=rationale,
+        actor=actor,
+    )
 
 
 @st.cache_resource
@@ -413,4 +379,3 @@ def render_findings_view(ctrl: UIController, active_id: str) -> None:
         "All vulnerability assessment checks and tools executed strictly within authorized practice lab bounds. "
         "Every finding retains SHA-256 evidence integrity and cryptographic audit trace."
     )
-

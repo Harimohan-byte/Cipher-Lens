@@ -10,8 +10,9 @@ Invariants:
 - AGENTS.md Rule 14: Dependencies flow downward: ui -> orchestrator -> policy/adapters/correlate -> store/models.
 """
 
-from typing import TYPE_CHECKING, Any, Protocol
+from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, Protocol
 from cipher_lens.models.findings import Evidence
 from cipher_lens.orchestrator.grounding import GroundingValidator
 from cipher_lens.reports.models import ReportData

@@ -214,10 +214,14 @@ def test_triage_accept_risk(populated_controller):
 
 def test_triage_audit_failure_rolls_back_status(populated_controller, monkeypatch):
     """AGENTS.md Rule 7: failure to append to audit log must roll back finding status update."""
+    append_in_transaction = populated_controller.audit_log.append_in_transaction
+
     def broken_append(*args, **kwargs):
+        assert populated_controller.conn.in_transaction
+        append_in_transaction(*args, **kwargs)
         raise RuntimeError("Simulated audit disk failure")
 
-    monkeypatch.setattr(populated_controller.audit_log, "append", broken_append)
+    monkeypatch.setattr(populated_controller.audit_log, "append_in_transaction", broken_append)
 
     with pytest.raises(RuntimeError, match="Simulated audit disk failure"):
         apply_triage_decision(
@@ -233,4 +237,8 @@ def test_triage_audit_failure_rolls_back_status(populated_controller, monkeypatc
     finding = populated_controller.repository.get_finding("a1", "VAPT-0001")
     assert finding.status == "suspected"
     assert "Triaged" not in finding.status_reason
-
+    assert not [
+        event
+        for event in populated_controller.get_audit_events("a1")
+        if event.event_type == "finding_triaged"
+    ]

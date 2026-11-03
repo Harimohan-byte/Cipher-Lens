@@ -92,6 +92,55 @@ class AuditLog:
 
         Never put secrets or raw scan output in audit payloads.
         """
+        cursor = self.conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        try:
+            event = self._insert_event(
+                actor=actor,
+                event_type=event_type,
+                payload=payload,
+                assessment_id=assessment_id,
+            )
+            cursor.execute("COMMIT")
+        except Exception:
+            cursor.execute("ROLLBACK")
+            raise
+
+        self.publish_committed(event)
+        return event
+
+    def append_in_transaction(
+        self,
+        *,
+        actor: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        assessment_id: str | None = None,
+    ) -> AuditEvent:
+        """Inserts an event into a transaction owned by the caller."""
+        if not self.conn.in_transaction:
+            raise RuntimeError("append_in_transaction requires an active transaction")
+        return self._insert_event(
+            actor=actor,
+            event_type=event_type,
+            payload=payload,
+            assessment_id=assessment_id,
+        )
+
+    def publish_committed(self, event: AuditEvent) -> None:
+        """Publishes an event after the transaction containing it has committed."""
+        if self.publisher is not None:
+            self.publisher.publish(event)
+
+    def _insert_event(
+        self,
+        *,
+        actor: str,
+        event_type: str,
+        payload: dict[str, Any] | None,
+        assessment_id: str | None,
+    ) -> AuditEvent:
+        """Validates and inserts an audit row without managing the transaction."""
         if not isinstance(actor, str):
             raise TypeError("actor must be a string")
         if not actor:
@@ -115,41 +164,34 @@ class AuditLog:
             raise ValueError(f"payload is not JSON-serializable: {exc}") from exc
 
         cursor = self.conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
-        try:
-            cursor.execute("SELECT id, row_hash FROM audit_log ORDER BY id DESC LIMIT 1")
-            last_row = cursor.fetchone()
-            if last_row is None:
-                last_id = 0
-                prev_hash = GENESIS_HASH
-            else:
-                last_id = last_row[0]
-                prev_hash = last_row[1]
+        cursor.execute("SELECT id, row_hash FROM audit_log ORDER BY id DESC LIMIT 1")
+        last_row = cursor.fetchone()
+        if last_row is None:
+            last_id = 0
+            prev_hash = GENESIS_HASH
+        else:
+            last_id = last_row[0]
+            prev_hash = last_row[1]
 
-            new_id = last_id + 1
-            ts = datetime.now(UTC).isoformat(timespec="microseconds")
-            row_dict = {
-                "id": new_id,
-                "ts": ts,
-                "actor": actor,
-                "event_type": event_type,
-                "assessment_id": assessment_id,
-                "payload": payload_obj,
-            }
-            row_hash = hashlib.sha256(
-                (prev_hash + canonical_json(row_dict)).encode("utf-8")
-            ).hexdigest()
+        new_id = last_id + 1
+        ts = datetime.now(UTC).isoformat(timespec="microseconds")
+        row_dict = {
+            "id": new_id,
+            "ts": ts,
+            "actor": actor,
+            "event_type": event_type,
+            "assessment_id": assessment_id,
+            "payload": payload_obj,
+        }
+        row_hash = hashlib.sha256(
+            (prev_hash + canonical_json(row_dict)).encode("utf-8")
+        ).hexdigest()
 
-            cursor.execute(
-                "INSERT INTO audit_log (id, ts, actor, event_type, assessment_id, payload, prev_hash, row_hash) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_id, ts, actor, event_type, assessment_id, payload_text, prev_hash, row_hash),
-            )
-            cursor.execute("COMMIT")
-        except Exception:
-            cursor.execute("ROLLBACK")
-            raise
-
+        cursor.execute(
+            "INSERT INTO audit_log (id, ts, actor, event_type, assessment_id, payload, prev_hash, row_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (new_id, ts, actor, event_type, assessment_id, payload_text, prev_hash, row_hash),
+        )
         event = AuditEvent(
             id=new_id,
             ts=ts,
@@ -160,10 +202,6 @@ class AuditLog:
             prev_hash=prev_hash,
             row_hash=row_hash,
         )
-
-        if self.publisher is not None:
-            self.publisher.publish(event)
-
         return event
 
     def query(
@@ -345,4 +383,3 @@ class AuditLog:
             reason="Chain verified successfully",
             head_hash=head_hash,
         )
-
