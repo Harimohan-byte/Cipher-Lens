@@ -10,7 +10,9 @@ Invariants:
 4. Emits real-time lifecycle events via EventBus for Streamlit UI.
 """
 
+import asyncio
 import hashlib
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -24,11 +26,13 @@ from cipher_lens.models.findings import Evidence, Finding, RawFinding
 from cipher_lens.models.plan import PlanStep
 from cipher_lens.orchestrator.events import AssessmentEvent, EventBus
 from cipher_lens.orchestrator.runner import ToolRunner
-from cipher_lens.policy.approvals import ApprovalManager
+from cipher_lens.policy.approvals import ApprovalError, ApprovalManager
 from cipher_lens.policy.gate import PolicyGate
 from cipher_lens.policy.scope import ScopeRegistry
 from cipher_lens.store.artifacts import ArtifactStore
 from cipher_lens.store.repository import AssessmentRepository
+
+logger = logging.getLogger(__name__)
 
 
 class OrchestrationEngine:
@@ -58,6 +62,7 @@ class OrchestrationEngine:
         self.scorer = risk_scorer
         self.event_bus = event_bus or EventBus()
         self._executed_keys: set[str] = set()
+        self._inflight_tasks: dict[str, asyncio.Task[ExecutionResult]] = {}
 
     def _emit(self, assessment_id: str, event_type: str, payload: dict[str, Any]) -> None:
         self.event_bus.publish(
@@ -83,7 +88,8 @@ class OrchestrationEngine:
         step_id = step.step_id
         idem_key = step.idempotency_key or self.compute_idempotency_key(step, assessment_id=assessment_id)
 
-        # 1. Check idempotency
+        # 1. Check idempotency:
+        # If already succeeded in this assessment, skip execution.
         if idem_key in self._executed_keys:
             self._emit(
                 assessment_id,
@@ -97,6 +103,11 @@ class OrchestrationEngine:
                 exit_code=0,
                 duration_seconds=0.0,
             )
+
+        # If currently running concurrently, await the in-flight task shielded from cancellation
+        # so that a waiter cancellation does not cancel the underlying executing task.
+        if idem_key in self._inflight_tasks:
+            return await asyncio.shield(self._inflight_tasks[idem_key])
 
         # 2. Check policy gate authorization
         raw_port = step.params.get("port")
@@ -144,7 +155,7 @@ class OrchestrationEngine:
         # 3. Check approval requirement
         try:
             self.approval_manager.require(step, assessment_id=assessment_id)
-        except Exception as exc:
+        except ApprovalError as exc:
             self._emit(
                 assessment_id,
                 "step_awaiting_approval",
@@ -152,7 +163,7 @@ class OrchestrationEngine:
             )
             return ExecutionResult(
                 status="failed",
-                stdout="",
+                stdout="[awaiting_approval]",
                 stderr=f"Approval requirement not met: {exc}",
                 exit_code=2,
                 duration_seconds=0.0,
@@ -168,9 +179,16 @@ class OrchestrationEngine:
                 duration_seconds=0.0,
             )
 
-        # 4. Execute step via ToolRunner
+        # 4. Execute step via ToolRunner with in-flight task tracking
         self._emit(assessment_id, "step_started", {"step_id": step_id, "tool": step.tool})
-        exec_result = await self.runner.run(step, assessment_id=assessment_id)
+        task = asyncio.current_task()
+        if task is not None:
+            self._inflight_tasks[idem_key] = task
+
+        try:
+            exec_result = await self.runner.run(step, assessment_id=assessment_id)
+        finally:
+            self._inflight_tasks.pop(idem_key, None)
 
         # Register idempotency key only after successful run so failures can be retried
         if exec_result.status == "succeeded":
@@ -235,8 +253,12 @@ class OrchestrationEngine:
                     enrichment_data = await self.enrichment.enrich_cve(finding.cve[0])
                     if enrichment_data and enrichment_data.cvss:
                         finding.cvss = enrichment_data.cvss
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "CVE enrichment failed for %s; scoring without enrichment data: %s",
+                        finding.cve[0],
+                        exc,
+                    )
 
             if self.scorer:
                 finding.risk = self.scorer.score_finding(finding, enrichment=enrichment_data)

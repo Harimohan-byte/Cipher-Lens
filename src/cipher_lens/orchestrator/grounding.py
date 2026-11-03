@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from cipher_lens.adapters.imports.common import CVE_PATTERN
 from cipher_lens.models.findings import Finding
 
-FINDING_ID_PATTERN = re.compile(r"\bVAPT-\d{4}(?!\d)", re.IGNORECASE)
+FINDING_ID_PATTERN = re.compile(r"\bVAPT-\d+\b", re.IGNORECASE)
 
 
 class GroundingResult(BaseModel):

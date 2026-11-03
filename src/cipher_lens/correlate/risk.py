@@ -17,51 +17,63 @@ import yaml
 from cipher_lens.enrichment.service import CveEnrichment
 from cipher_lens.models.findings import FactorValue, Finding, RiskScore
 
+_DEFAULT_WEIGHTS = {
+    "severity": 0.35,
+    "exploitability": 0.25,
+    "exposure": 0.15,
+    "asset_criticality": 0.10,
+    "confidence": 0.15,
+}
+
+_DEFAULT_SEVERITY_BANDS = {
+    "critical": 1.0,
+    "high": 0.75,
+    "medium": 0.50,
+    "low": 0.25,
+    "info": 0.0,
+}
+
+_DEFAULT_CONFIDENCE_WEIGHTS = {
+    "high": 1.0,
+    "medium": 0.6,
+    "low": 0.3,
+}
+
+_DEFAULT_EXPOSURE_WEIGHTS = {
+    "external": 1.0,
+    "internal": 0.5,
+    "isolated": 0.2,
+    "default": 0.5,
+}
+
+_DEFAULT_CRITICALITY_WEIGHTS = {
+    "critical": 1.0,
+    "high": 0.8,
+    "medium": 0.5,
+    "low": 0.2,
+    "default": 0.5,
+}
+
+_DEFAULT_RISK_BANDS = {
+    "critical": 80.0,
+    "high": 60.0,
+    "medium": 40.0,
+    "low": 20.0,
+    "informational": 0.0,
+}
+
 
 class RiskScorer:
     """Calculates transparent composite risk scores with detailed factor breakdowns."""
 
     def __init__(self, config: dict) -> None:
         self.version = config.get("version", "1.0.0")
-        self.weights = config.get("weights", {
-            "severity": 0.35,
-            "exploitability": 0.25,
-            "exposure": 0.15,
-            "asset_criticality": 0.10,
-            "confidence": 0.15,
-        })
-        self.severity_bands = config.get("severity_bands", {
-            "critical": 1.0,
-            "high": 0.75,
-            "medium": 0.50,
-            "low": 0.25,
-            "info": 0.0,
-        })
-        self.confidence_weights = config.get("confidence_weights", {
-            "high": 1.0,
-            "medium": 0.6,
-            "low": 0.3,
-        })
-        self.exposure_weights = config.get("exposure_weights", {
-            "external": 1.0,
-            "internal": 0.5,
-            "isolated": 0.2,
-            "default": 0.5,
-        })
-        self.criticality_weights = config.get("criticality_weights", {
-            "critical": 1.0,
-            "high": 0.8,
-            "medium": 0.5,
-            "low": 0.2,
-            "default": 0.5,
-        })
-        self.risk_bands = config.get("risk_bands", {
-            "critical": 80.0,
-            "high": 60.0,
-            "medium": 40.0,
-            "low": 20.0,
-            "informational": 0.0,
-        })
+        self.weights = {**_DEFAULT_WEIGHTS, **config.get("weights", {})}
+        self.severity_bands = {**_DEFAULT_SEVERITY_BANDS, **config.get("severity_bands", {})}
+        self.confidence_weights = {**_DEFAULT_CONFIDENCE_WEIGHTS, **config.get("confidence_weights", {})}
+        self.exposure_weights = {**_DEFAULT_EXPOSURE_WEIGHTS, **config.get("exposure_weights", {})}
+        self.criticality_weights = {**_DEFAULT_CRITICALITY_WEIGHTS, **config.get("criticality_weights", {})}
+        self.risk_bands = {**_DEFAULT_RISK_BANDS, **config.get("risk_bands", {})}
 
     @classmethod
     def load(cls, config_path: Path | str) -> "RiskScorer":
