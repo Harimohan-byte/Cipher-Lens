@@ -234,6 +234,9 @@ def render_assessment_page(ctrl: UIController) -> None:
         # Plan Generation Section
         st.markdown("---")
         st.subheader("Adaptive Plan Proposal")
+        if ctrl.get_chaos_config().llm_down:
+            st.warning("⚠️ **LLM Outage Injected (Chaos Switch):** Operating with deterministic rule-based planner fallback.")
+
         col_p1, col_p2 = st.columns([2, 1])
 
         with col_p1:
@@ -359,6 +362,55 @@ def render_execution_page(ctrl: UIController) -> None:
                 st.write(f"**Expected Outcome:** {s.expected_outcome}")
                 st.write(f"**Triggered By:** `{s.triggered_by}`")
                 st.write(f"**Idempotency Key:** `{s.idempotency_key}`")
+
+    # Offline Replay Mode (Task A14)
+    st.markdown("---")
+    st.subheader("🔄 Offline Replay Mode (Task A14)")
+    st.caption(
+        "Execute the real parse → normalize → correlate → score pipeline on recorded scanner artifacts (Nmap, Nikto, Burp) "
+        "with every evidence record stamped origin='replayed' (AGENTS.md Rule 8)."
+    )
+    col_rep1, col_rep2 = st.columns([3, 1])
+    with col_rep1:
+        st.write("Replay pre-recorded synthetic/sanitized scan output to verify end-to-end data processing offline.")
+    with col_rep2:
+        replay_btn = st.button("Replay Fixture Scans 🔄", key="replay_fixtures_btn", type="primary")
+
+    if replay_btn:
+        with st.spinner("Replaying recorded scan artifacts..."):
+            replayed_findings = ctrl.replay_fixtures(active_id)
+            st.success(f"Replay completed! Ingested and correlated {len(replayed_findings)} findings with origin='replayed'.")
+            st.rerun()
+
+    # Chaos Engineering & Failure Switches (Task A14)
+    st.markdown("---")
+    st.subheader("⚡ Chaos Engineering & Failure Injection Switches (Task A14)")
+    st.caption("Simulate real-world failure modes to demonstrate platform fault-tolerance and safety.")
+    cfg = ctrl.get_chaos_config()
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        kz = st.checkbox("Kill ZAP mid-scan (exit 137)", value=cfg.kill_zap_mid_scan, key="chaos_kz")
+        if kz != cfg.kill_zap_mid_scan:
+            ctrl.set_chaos_switch("kill_zap_mid_scan", kz)
+            st.rerun()
+        sn = st.checkbox("Slow Nmap (timeout)", value=cfg.slow_nmap, key="chaos_sn")
+        if sn != cfg.slow_nmap:
+            ctrl.set_chaos_switch("slow_nmap", sn)
+            st.rerun()
+    with c2:
+        mx = st.checkbox("Malformed XML Output", value=cfg.malformed_xml, key="chaos_mx")
+        if mx != cfg.malformed_xml:
+            ctrl.set_chaos_switch("malformed_xml", mx)
+            st.rerun()
+        llm_d = st.checkbox("LLM Backend Outage", value=cfg.llm_down, key="chaos_llm")
+        if llm_d != cfg.llm_down:
+            ctrl.set_chaos_switch("llm_down", llm_d)
+            st.rerun()
+    with c3:
+        nvd_d = st.checkbox("NVD / EPSS Outage", value=cfg.nvd_down, key="chaos_nvd")
+        if nvd_d != cfg.nvd_down:
+            ctrl.set_chaos_switch("nvd_down", nvd_d)
+            st.rerun()
 
 
 def render_findings_page(ctrl: UIController) -> None:
