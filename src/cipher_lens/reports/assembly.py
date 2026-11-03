@@ -13,6 +13,7 @@ Invariants:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol
+
 from cipher_lens.models.findings import Evidence
 from cipher_lens.orchestrator.grounding import GroundingValidator
 from cipher_lens.reports.models import ReportData
@@ -33,7 +34,7 @@ class ReportDataProvider(Protocol):
 class ReportAssembler:
     """Assembles all real assessment records, audit events, runs, approvals, and grounded summaries for PDF report generation."""
 
-    def __init__(self, ctrl: ReportDataProvider | "UIController" | Any) -> None:
+    def __init__(self, ctrl: ReportDataProvider | UIController | Any) -> None:
         self.ctrl = ctrl
         self.repo = ctrl.repository
         self.validator = GroundingValidator()
