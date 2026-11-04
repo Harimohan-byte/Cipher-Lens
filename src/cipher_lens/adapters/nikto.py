@@ -27,6 +27,7 @@ from cipher_lens.adapters.base import (
     ExecutionContext,
     ExecutionResult,
     HealthResult,
+    validate_safe_target,
 )
 from cipher_lens.models.findings import Asset, Evidence, RawFinding
 from cipher_lens.models.plan import PlanStep
@@ -45,12 +46,7 @@ class NiktoParams(BaseModel):
     @field_validator("target")
     @classmethod
     def validate_target(cls, v: str) -> str:
-        clean = v.strip()
-        if not clean or DISALLOWED_TARGET_CHARS.search(clean):
-            raise ValueError(
-                f"Invalid characters in target '{v}'; shell injection disallowed"
-            )
-        return clean
+        return validate_safe_target(v)
 
 
 def build_nikto_argv(
@@ -65,6 +61,7 @@ def build_nikto_argv(
     2. Always outputs XML (-Format xml) for defusedxml parsing.
     3. Always non-interactive (-nointeractive) to prevent TTY prompts.
     4. Writes XML to specified output_file or fallback path.
+    5. Disables 404 guessing and external redirect tracking (-no404) (ERR-27).
     """
     argv = [
         binary_path,
@@ -73,6 +70,7 @@ def build_nikto_argv(
         "-Format", "xml",
         "-output", output_file or "-",
         "-nointeractive",
+        "-no404",
     ]
     if params.ssl:
         argv.append("-ssl")

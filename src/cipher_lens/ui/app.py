@@ -14,6 +14,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from cipher_lens.config import get_settings
 from cipher_lens.models.plan import ActionClass
 from cipher_lens.policy.scope import Scope
 from cipher_lens.reports.assembly import ReportAssembler
@@ -400,34 +401,37 @@ def render_execution_page(ctrl: UIController) -> None:
             st.rerun()
 
     # Chaos Engineering & Failure Switches (Task A14)
-    st.markdown("---")
-    st.subheader("⚡ Chaos Engineering & Failure Injection Switches (Task A14)")
-    st.caption("Simulate real-world failure modes to demonstrate platform fault-tolerance and safety.")
-    cfg = ctrl.get_chaos_config()
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        kz = st.checkbox("Kill ZAP mid-scan (exit 137)", value=cfg.kill_zap_mid_scan, key="chaos_kz")
-        if kz != cfg.kill_zap_mid_scan:
-            ctrl.set_chaos_switch("kill_zap_mid_scan", kz)
-            st.rerun()
-        sn = st.checkbox("Slow Nmap (timeout)", value=cfg.slow_nmap, key="chaos_sn")
-        if sn != cfg.slow_nmap:
-            ctrl.set_chaos_switch("slow_nmap", sn)
-            st.rerun()
-    with c2:
-        mx = st.checkbox("Malformed XML Output", value=cfg.malformed_xml, key="chaos_mx")
-        if mx != cfg.malformed_xml:
-            ctrl.set_chaos_switch("malformed_xml", mx)
-            st.rerun()
-        llm_d = st.checkbox("LLM Backend Outage", value=cfg.llm_down, key="chaos_llm")
-        if llm_d != cfg.llm_down:
-            ctrl.set_chaos_switch("llm_down", llm_d)
-            st.rerun()
-    with c3:
-        nvd_d = st.checkbox("NVD / EPSS Outage", value=cfg.nvd_down, key="chaos_nvd")
-        if nvd_d != cfg.nvd_down:
-            ctrl.set_chaos_switch("nvd_down", nvd_d)
-            st.rerun()
+    # Gated behind ENABLE_CHAOS configuration flag to prevent unauthorized disruption in production (ERR-06)
+    settings = get_settings()
+    if settings.enable_chaos:
+        st.markdown("---")
+        st.subheader("⚡ Chaos Engineering & Failure Injection Switches (Task A14)")
+        st.caption("Simulate real-world failure modes to demonstrate platform fault-tolerance and safety.")
+        cfg = ctrl.get_chaos_config()
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            kz = st.checkbox("Kill ZAP mid-scan (exit 137)", value=cfg.kill_zap_mid_scan, key="chaos_kz")
+            if kz != cfg.kill_zap_mid_scan:
+                ctrl.set_chaos_switch("kill_zap_mid_scan", kz)
+                st.rerun()
+            sn = st.checkbox("Slow Nmap (timeout)", value=cfg.slow_nmap, key="chaos_sn")
+            if sn != cfg.slow_nmap:
+                ctrl.set_chaos_switch("slow_nmap", sn)
+                st.rerun()
+        with c2:
+            mx = st.checkbox("Malformed XML Output", value=cfg.malformed_xml, key="chaos_mx")
+            if mx != cfg.malformed_xml:
+                ctrl.set_chaos_switch("malformed_xml", mx)
+                st.rerun()
+            llm_d = st.checkbox("LLM Backend Outage", value=cfg.llm_down, key="chaos_llm")
+            if llm_d != cfg.llm_down:
+                ctrl.set_chaos_switch("llm_down", llm_d)
+                st.rerun()
+        with c3:
+            nvd_d = st.checkbox("NVD / EPSS Outage", value=cfg.nvd_down, key="chaos_nvd")
+            if nvd_d != cfg.nvd_down:
+                ctrl.set_chaos_switch("nvd_down", nvd_d)
+                st.rerun()
 
 
 def render_findings_page(ctrl: UIController) -> None:

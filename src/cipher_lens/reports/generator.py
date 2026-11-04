@@ -13,6 +13,7 @@ Renders complete assessment reports with:
 """
 
 import io
+import xml.sax.saxutils
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,12 @@ from reportlab.platypus import (
 
 from cipher_lens.reports.canvas import NumberedCanvas
 from cipher_lens.reports.models import ReportData
+
+
+def safe_para(text: Any, style: Any) -> Paragraph:
+    """Escapes XML entities before instantiating ReportLab Paragraph (ERR-23)."""
+    clean = xml.sax.saxutils.escape(str(text or ""))
+    return Paragraph(clean, style)
 
 
 def _get_styles() -> dict[str, ParagraphStyle]:
@@ -387,10 +394,10 @@ def build_report_flowables(data: ReportData) -> list[Any]:
             cwe_str = ", ".join(finding.cwe) if finding.cwe else "None reported"
 
             f_meta = [
-                [Paragraph("<b>Asset:</b>", styles["body"]), Paragraph(f"{finding.asset.host}:{finding.asset.port or ''}{finding.asset.url_path or ''}", styles["body"])],
-                [Paragraph("<b>Status:</b>", styles["body"]), Paragraph(f"{finding.status.upper()} ({finding.status_reason})", styles["body"])],
-                [Paragraph("<b>CVE / CWE:</b>", styles["body"]), Paragraph(f"CVE: {cve_str} | CWE: {cwe_str}", styles["body"])],
-                [Paragraph("<b>CVSS:</b>", styles["body"]), Paragraph(cvss_str, styles["body"])],
+                [Paragraph("<b>Asset:</b>", styles["body"]), safe_para(f"{finding.asset.host}:{finding.asset.port or ''}{finding.asset.url_path or ''}", styles["body"])],
+                [Paragraph("<b>Status:</b>", styles["body"]), safe_para(f"{finding.status.upper()} ({finding.status_reason})", styles["body"])],
+                [Paragraph("<b>CVE / CWE:</b>", styles["body"]), safe_para(f"CVE: {cve_str} | CWE: {cwe_str}", styles["body"])],
+                [Paragraph("<b>CVSS:</b>", styles["body"]), safe_para(cvss_str, styles["body"])],
             ]
             f_table = Table(f_meta, colWidths=[90, 390])
             f_table.setStyle(
@@ -409,8 +416,8 @@ def build_report_flowables(data: ReportData) -> list[Any]:
             flowables.append(Paragraph("<b>Observed Technical Evidence:</b>", styles["body"]))
             for ev in finding.evidence:
                 ev_box = [
-                    [Paragraph(f"<b>Tool:</b> {ev.source_tool} | <b>Locator:</b> {ev.locator} | <b>SHA-256:</b> {ev.raw_sha256[:16]}...", styles["code"])],
-                    [Paragraph(ev.snippet, styles["code"])],
+                    [Paragraph(f"<b>Tool:</b> {xml.sax.saxutils.escape(ev.source_tool)} | <b>Locator:</b> {xml.sax.saxutils.escape(ev.locator)} | <b>SHA-256:</b> {ev.raw_sha256[:16]}...", styles["code"])],
+                    [safe_para(ev.snippet, styles["code"])],
                 ]
                 ev_table = Table(ev_box, colWidths=[480])
                 ev_table.setStyle(
@@ -429,8 +436,8 @@ def build_report_flowables(data: ReportData) -> list[Any]:
                 flowables.append(Paragraph("<b>AI Analytical Inference (Non-Evidence):</b>", styles["body"]))
                 for inf in finding.inferences:
                     inf_box = [
-                        [Paragraph(f"<b>Provider:</b> {inf.provider} | <b>Label:</b> {inf.label}", styles["callout"])],
-                        [Paragraph(inf.text, styles["callout"])],
+                        [Paragraph(f"<b>Provider:</b> {xml.sax.saxutils.escape(inf.provider)} | <b>Label:</b> {xml.sax.saxutils.escape(inf.label)}", styles["callout"])],
+                        [safe_para(inf.text, styles["callout"])],
                     ]
                     inf_table = Table(inf_box, colWidths=[480])
                     inf_table.setStyle(

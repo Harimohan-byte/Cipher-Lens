@@ -18,6 +18,7 @@ from cipher_lens.adapters.imports.common import (
     CVE_PATTERN,
     ImportResult,
     is_target_in_scope,
+    validate_import_size,
 )
 from cipher_lens.models.findings import Asset, Evidence, RawFinding
 from cipher_lens.models.observations import Observation
@@ -52,7 +53,8 @@ class OpenvasImporter(BaseAdapter):
         scope: Scope | None = None,
     ) -> ImportResult:
         """Parses OpenVAS XML report, dropping out-of-scope hosts with warnings."""
-        root = ET.fromstring(raw_bytes)
+        bounded_bytes = validate_import_size(raw_bytes)
+        root = ET.fromstring(bounded_bytes)
         result = ImportResult()
 
         for res_idx, res_elem in enumerate(root.findall(".//results/result")):

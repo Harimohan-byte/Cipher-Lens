@@ -13,6 +13,22 @@ from cipher_lens.policy.scope import Scope
 CVE_PATTERN = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
 CWE_PATTERN = re.compile(r"CWE-\d{1,6}", re.IGNORECASE)
 
+MAX_IMPORT_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+def validate_import_size(content: bytes | str, max_bytes: int | None = None) -> bytes:
+    """Validates that input content does not exceed maximum allowable import size (50MB).
+
+    Guards against memory exhaustion and XML entity expansion DoS attacks (ERR-22).
+    """
+    limit = max_bytes if max_bytes is not None else MAX_IMPORT_FILE_SIZE_BYTES
+    raw_bytes = content.encode("utf-8") if isinstance(content, str) else content
+    if len(raw_bytes) > limit:
+        raise ValueError(
+            f"Import payload size ({len(raw_bytes)} bytes) exceeds maximum allowable limit of {limit} bytes"
+        )
+    return raw_bytes
+
 
 class ImportResult(BaseModel):
     """Result of parsing an imported scan report file."""

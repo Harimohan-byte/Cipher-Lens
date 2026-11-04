@@ -71,3 +71,31 @@ def test_locator_formatting_and_parsing(temp_artifact_store: ArtifactStore):
 
     with pytest.raises(ValueError, match="Invalid locator format"):
         temp_artifact_store.parse_locator("invalid_locator_without_hash")
+
+
+def test_path_traversal_extension_rejected(temp_artifact_store: ArtifactStore) -> None:
+    """Break-it test: Path traversal attempts via extension must be rejected (ERR-08)."""
+    with pytest.raises(ValueError, match="Invalid extension"):
+        temp_artifact_store.save_raw(
+            content=b"malicious",
+            source_tool="nmap",
+            run_id="run-1",
+            extension="../../etc/passwd",
+        )
+
+
+def test_get_path_traversal_id_rejected(temp_artifact_store: ArtifactStore) -> None:
+    """Break-it test: Directory traversal via artifact_id must be rejected (ERR-08)."""
+    with pytest.raises(ValueError, match="Invalid artifact_id"):
+        temp_artifact_store.get_path("../../etc/passwd")
+
+
+def test_extension_allowlist_enforced(temp_artifact_store: ArtifactStore) -> None:
+    """Enforces strict alphanumeric extension length between 1 and 8 characters."""
+    with pytest.raises(ValueError, match="Invalid extension"):
+        temp_artifact_store.save_raw(
+            content=b"test",
+            source_tool="nmap",
+            run_id="run-2",
+            extension="toolongextension",
+        )

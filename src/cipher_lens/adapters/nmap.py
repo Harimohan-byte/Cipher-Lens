@@ -17,6 +17,8 @@ from cipher_lens.adapters.base import (
     ExecutionContext,
     ExecutionResult,
     HealthResult,
+    validate_safe_ports,
+    validate_safe_target,
 )
 from cipher_lens.models.findings import Asset, Evidence, RawFinding
 from cipher_lens.models.observations import Observation
@@ -51,22 +53,12 @@ class NmapParams(BaseModel):
     @field_validator("target")
     @classmethod
     def validate_target(cls, v: str) -> str:
-        clean = v.strip()
-        if not clean or DISALLOWED_TARGET_CHARS.search(clean):
-            raise ValueError(f"Invalid characters in target '{v}'; shell injection disallowed")
-        return clean
+        return validate_safe_target(v)
 
     @field_validator("ports")
     @classmethod
     def validate_ports(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        clean = v.strip()
-        if not clean:
-            return None
-        if not PORTS_REGEX.match(clean):
-            raise ValueError(f"Invalid port specification '{v}'; must be comma-separated numbers or ranges")
-        return clean
+        return validate_safe_ports(v)
 
     @field_validator("scripts")
     @classmethod

@@ -56,7 +56,10 @@ CIPHER_LENS_REPORTS_DIR=local_data/reports
 
 ### 1.4 Launching the Application
 ```powershell
-streamlit run src/cipher_lens/ui/app.py
+# Safe launcher strictly bound to loopback interface (ERR-01)
+.\run.ps1
+# Or directly via streamlit:
+streamlit run src/cipher_lens/ui/app.py --server.address 127.0.0.1
 ```
 The operator dashboard will open at `http://localhost:8501`.
 

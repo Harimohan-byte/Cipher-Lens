@@ -19,6 +19,7 @@ from cipher_lens.adapters.imports.common import (
     ImportResult,
     is_target_in_scope,
     redact_sensitive_text,
+    validate_import_size,
 )
 from cipher_lens.models.findings import Asset, Evidence, RawFinding
 from cipher_lens.models.observations import Observation
@@ -53,7 +54,8 @@ class BurpImporter(BaseAdapter):
         scope: Scope | None = None,
     ) -> ImportResult:
         """Parses Burp XML issues, dropping out-of-scope hosts and redacting request/response data."""
-        root = ET.fromstring(raw_bytes)
+        bounded_bytes = validate_import_size(raw_bytes)
+        root = ET.fromstring(bounded_bytes)
         result = ImportResult()
 
         sev_map = {

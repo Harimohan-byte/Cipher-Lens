@@ -1,5 +1,7 @@
 """Base adapter interface and execution types."""
 
+import ipaddress
+import re
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Literal
@@ -10,6 +12,55 @@ from cipher_lens.models.findings import Evidence, RawFinding
 from cipher_lens.models.observations import Observation
 from cipher_lens.models.plan import PlanStep
 from cipher_lens.store.artifacts import ArtifactStore
+
+_RFC_1123_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$"
+)
+_PORTS_REGEX = re.compile(r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$")
+
+
+def validate_safe_target(target: str) -> str:
+    """Validates a target host or IP using strict allowlisting (ERR-07).
+
+    Accepts valid IPv4/IPv6 addresses or RFC 1123 hostnames.
+    Rejects leading hyphens ('-'), shell metacharacters, and whitespace.
+    """
+    clean = str(target or "").strip()
+    if not clean:
+        raise ValueError("Invalid characters in target; cannot be empty")
+    if clean.startswith("-"):
+        raise ValueError(f"Invalid characters in target '{clean}'; cannot begin with a hyphen (flag injection defense)")
+    # Validate as IP address
+    try:
+        ipaddress.ip_address(clean)
+        return clean
+    except ValueError:
+        pass
+    # Validate as RFC 1123 Hostname
+    if _RFC_1123_HOSTNAME_RE.match(clean):
+        return clean
+    raise ValueError(f"Invalid characters in target '{clean}'; target is neither a valid IP address nor an RFC 1123 hostname")
+
+
+def validate_safe_ports(ports: str | None) -> str | None:
+    """Validates comma-separated port numbers or ranges (1-65535) (ERR-07)."""
+    if ports is None:
+        return None
+    clean = str(ports).strip()
+    if not clean:
+        return None
+    if not _PORTS_REGEX.match(clean):
+        raise ValueError(f"Invalid port specification '{ports}'; must be comma-separated numbers or ranges")
+    for part in clean.split(","):
+        if "-" in part:
+            low, high = map(int, part.split("-", 1))
+            if not (1 <= low <= 65535 and 1 <= high <= 65535 and low <= high):
+                raise ValueError(f"Port range '{part}' out of valid bounds (1-65535)")
+        else:
+            p = int(part)
+            if not (1 <= p <= 65535):
+                raise ValueError(f"Port '{p}' out of valid bounds (1-65535)")
+    return clean
 
 
 class AdapterStatus(str, Enum):

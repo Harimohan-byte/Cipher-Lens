@@ -152,3 +152,14 @@ async def test_importers_reject_live_run():
         with pytest.raises(NotImplementedError, match="import-only"):
             await imp.run(step, ctx)
 
+
+def test_importers_reject_oversized_payload(monkeypatch: pytest.MonkeyPatch):
+    """Break-it test: Payload larger than maximum limit is rejected before parsing to prevent memory exhaustion (ERR-22)."""
+    import cipher_lens.adapters.imports.common as common_imp
+    monkeypatch.setattr(common_imp, "MAX_IMPORT_FILE_SIZE_BYTES", 100)
+    fake_huge_data = b"<root>" + (b"A" * 150) + b"</root>"
+
+    for importer in [NessusImporter(), OpenvasImporter(), BurpImporter()]:
+        with pytest.raises(ValueError, match="exceeds maximum allowable limit"):
+            importer.parse_with_scope(fake_huge_data, make_evidence("test"))
+

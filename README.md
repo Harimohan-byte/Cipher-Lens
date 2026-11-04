@@ -99,7 +99,7 @@ GEMINI_API_KEY_SECONDARY=your_secondary_failover_key
 
 ### 3. Launch the Application
 ```powershell
-streamlit run src/cipher_lens/ui/app.py
+streamlit run src/cipher_lens/ui/app.py --server.address 127.0.0.1
 ```
 Open your browser to `http://localhost:8501`.
 

@@ -42,6 +42,7 @@ def test_build_argv_nikto_minimal():
     assert "-Format" in argv
     assert "xml" in argv
     assert "-nointeractive" in argv
+    assert "-no404" in argv
     # Safety invariant: argv must be a list, never a string
     assert isinstance(argv, list)
     assert all(isinstance(a, str) for a in argv)
@@ -71,6 +72,12 @@ def test_nikto_disallowed_target_rejected():
 
     with pytest.raises(ValidationError, match="Invalid characters in target"):
         NiktoParams(target="host`id`", port=80)
+
+
+def test_nikto_target_leading_hyphen_rejected():
+    """Break-it check: Flags passed as target must be rejected (ERR-07)."""
+    with pytest.raises(ValidationError, match="cannot begin with a hyphen"):
+        NiktoParams(target="-vhost", port=80)
 
 
 def test_nikto_invalid_port_rejected():

@@ -70,6 +70,15 @@ def test_invalid_target_injection_rejected():
         NmapParams(target="10.0.0.5 && ls")
 
 
+def test_target_leading_hyphen_rejected():
+    """Break-it check: Flags passed as target must be rejected (ERR-07)."""
+    with pytest.raises(ValidationError, match="cannot begin with a hyphen"):
+        NmapParams(target="-sV")
+
+    with pytest.raises(ValidationError, match="cannot begin with a hyphen"):
+        NmapParams(target="--script=vuln")
+
+
 def test_invalid_ports_format_rejected():
     """Ports must strictly match valid port or range format."""
     with pytest.raises(ValidationError, match="Invalid port specification"):
