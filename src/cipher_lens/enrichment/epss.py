@@ -1,6 +1,8 @@
 # DECISION: FIRST EPSS queries are bounded by explicit timeouts; missing or offline EPSS scores return None rather than synthetic defaults.
 """FIRST EPSS (Exploit Prediction Scoring System) client."""
 
+import urllib.parse
+
 import httpx
 
 
@@ -14,7 +16,8 @@ async def fetch_epss(
 
     Returns (epss_score, percentile) or (None, None) if not available.
     """
-    url = f"https://api.first.org/data/v1/epss?cve={cve_id}"
+    safe_cve = urllib.parse.quote(cve_id.strip())
+    url = f"https://api.first.org/data/v1/epss?cve={safe_cve}"
     should_close = client is None
     http_client = client or httpx.AsyncClient(timeout=timeout)
 

@@ -210,7 +210,19 @@ def test_standards_mapper_cwe_to_owasp_and_nist():
 
     mapping = mapper.map_finding(cwe=["CWE-79", "CWE-89"])
     assert "A03:2021-Injection" in mapping.owasp_top_10
+    assert "A05:2025-Injection" in mapping.owasp_top_10_2025
     assert "PR.DS" in mapping.nist_csf_functions or "PR.PS" in mapping.nist_csf_functions
+
+
+def test_standards_mapper_owasp_2025_common_scanner_cwes():
+    """Break-it test: Common scanner CWEs map to OWASP Top 10 2025 (ERR-15 / INC-09)."""
+    mapper = StandardsMapper.load(MAPPINGS_FILE)
+
+    mapping = mapper.map_finding(cwe=["CWE-352", "CWE-918", "CWE-1021", "CWE-611", "CWE-862"])
+    assert "A01:2025-Broken Access Control" in mapping.owasp_top_10_2025
+    assert "A02:2025-Security Misconfiguration" in mapping.owasp_top_10_2025
+    assert "unmapped" not in mapping.owasp_top_10_2025
+
 
 
 def test_standards_mapper_unmapped_never_guessed():

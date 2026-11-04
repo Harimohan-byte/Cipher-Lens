@@ -99,3 +99,34 @@ def test_extension_allowlist_enforced(temp_artifact_store: ArtifactStore) -> Non
             run_id="run-2",
             extension="toolongextension",
         )
+
+
+def test_fernet_encryption_at_rest(tmp_path: Path) -> None:
+    """Break-it test: FERNET_KEY encrypts raw artifact bytes on disk (ERR-14)."""
+    from cryptography.fernet import Fernet
+
+    key = Fernet.generate_key().decode()
+    store = ArtifactStore(base_dir=tmp_path / "enc_artifacts", fernet_key=key)
+
+    plaintext = b"CRITICAL VULNERABILITY: Internal DB password leaked"
+    meta = store.save_raw(
+        content=plaintext,
+        source_tool="nikto",
+        run_id="run-enc",
+        extension="txt",
+    )
+
+    assert meta.is_encrypted is True
+
+    # Inspect the raw file on disk: it must NOT contain the plaintext!
+    disk_bytes = Path(meta.file_path).read_bytes()
+    assert plaintext not in disk_bytes
+    assert disk_bytes.startswith(b"gAAAAA")
+
+    # store.read_raw() must transparently decrypt to the original content
+    read_back = store.read_raw(meta.artifact_id)
+    assert read_back == plaintext
+
+    # Integrity verification matches the original plaintext hash
+    assert store.verify(meta.artifact_id, meta.sha256_hash) is True
+

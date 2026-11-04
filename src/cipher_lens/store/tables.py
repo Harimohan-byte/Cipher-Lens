@@ -218,6 +218,14 @@ CREATE_LLM_TRACES_ASSESSMENT_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_llm_traces_assessment ON llm_traces(assessment_id);
 """
 
+CREATE_LLM_BUDGET_TABLE = """
+CREATE TABLE IF NOT EXISTS llm_budget (
+    period_key TEXT PRIMARY KEY,
+    call_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+"""
+
 SCHEMA_STATEMENTS: list[str] = [
     CREATE_AUDIT_LOG_TABLE,
     CREATE_AUDIT_LOG_NO_UPDATE_TRIGGER,
@@ -242,6 +250,7 @@ SCHEMA_STATEMENTS: list[str] = [
     CREATE_LLM_TRACES_TABLE,
     CREATE_LLM_TRACES_HASH_INDEX,
     CREATE_LLM_TRACES_ASSESSMENT_INDEX,
+    CREATE_LLM_BUDGET_TABLE,
 ]
 
 # Aliases for convenience and backward/forward compatibility

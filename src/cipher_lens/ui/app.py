@@ -8,6 +8,7 @@ Invariants:
 - AGENTS.md Rule 14: Dependencies flow downward: ui -> orchestrator -> policy/adapters/correlate -> store/models.
 """
 
+import hmac
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -60,11 +61,95 @@ def get_controller() -> UIController:
     return st.session_state.controller
 
 
+def get_current_user() -> dict[str, str] | None:
+    """Returns the authenticated user dict from session state (ERR-01)."""
+    return st.session_state.get("authenticated_user")
+
+
+def render_auth_barrier() -> bool:
+    """Renders authentication barrier if session user is not authenticated (ERR-01).
+
+    Enforces token validation and role assignment (operator, lead_analyst, auditor).
+    """
+    if st.session_state.get("authenticated_user"):
+        return True
+
+    settings = get_settings()
+
+    st.title("🛡️ Cipher-Lens Access Control")
+    st.write(
+        "Authorized-Lab VAPT Assistant · Please authenticate with your role to enter the secure workspace."
+    )
+
+    with st.form("auth_login_form"):
+        st.subheader("Session Authentication")
+        username = st.text_input("Username", value="", placeholder="e.g. alice, bob, auditor")
+        role = st.selectbox(
+            "Assigned Role",
+            options=["operator", "lead_analyst", "auditor"],
+            format_func=lambda r: {
+                "operator": "Operator / Pen-Tester (Scope & Scans)",
+                "lead_analyst": "Lead Security Analyst (Plan Approver)",
+                "auditor": "Security Auditor (Read-Only Findings & Logs)",
+            }.get(r, r),
+        )
+        token = st.text_input(
+            "Security Token / Password",
+            type="password",
+            help="Required if configured via environment variables (ADMIN_TOKEN / OPERATOR_TOKEN / AUDITOR_TOKEN)",
+        )
+        submit_btn = st.form_submit_button("Sign In 🔐", type="primary")
+
+        if submit_btn:
+            clean_user = username.strip()
+            if not clean_user:
+                st.error("Username cannot be empty.")
+                return False
+
+            required_token = None
+            if role == "lead_analyst":
+                required_token = settings.admin_token
+            elif role == "operator":
+                required_token = settings.operator_token or settings.admin_token
+            elif role == "auditor":
+                required_token = settings.auditor_token or settings.admin_token
+
+            if required_token:
+                if not token:
+                    st.error(f"Security token is required for role '{role}'.")
+                    return False
+                if not hmac.compare_digest(token.encode("utf-8"), required_token.encode("utf-8")):
+                    st.error("Invalid security token.")
+                    return False
+
+            st.session_state["authenticated_user"] = {
+                "username": clean_user,
+                "role": role,
+            }
+            st.success(f"Authenticated as {clean_user} ({role})")
+            st.rerun()
+
+    return False
+
+
 def render_sidebar(ctrl: UIController) -> str:
     """Renders the global sidebar with system status and page navigation."""
     st.sidebar.title("🛡️ Cipher-Lens")
     st.sidebar.caption("Authorized-Lab VAPT Assistant · v2.1")
     st.sidebar.markdown("---")
+
+    user = get_current_user()
+    if user:
+        role_label = {
+            "operator": "Operator",
+            "lead_analyst": "Lead Analyst",
+            "auditor": "Auditor",
+        }.get(user["role"], user["role"])
+        st.sidebar.markdown(f"👤 **{user['username']}** `[{role_label}]`")
+        if st.sidebar.button("Sign Out 🚪", key="sign_out_btn"):
+            st.session_state["authenticated_user"] = None
+            st.rerun()
+        st.sidebar.markdown("---")
 
     # Scope health badge
     scopes = ctrl.list_scopes()
@@ -107,64 +192,70 @@ def render_scope_page(ctrl: UIController) -> None:
 
     col1, col2 = st.columns([3, 2])
 
+    user = get_current_user()
+    role = user["role"] if user else "auditor"
+
     with col1:
         st.subheader("Register Authorized Lab Scope")
-        with st.form("scope_registration_form"):
-            scope_id = st.text_input("Scope ID", value="scope-lab-01", help="Unique identifier for the engagement boundary")
-            name = st.text_input("Engagement Name / Owner", value="Authorized Practice Target Lab")
-            auth_ref = st.text_input(
-                "Authorization Reference",
-                value="AUTH-LAB-2026-PRACTICE",
-                help="Written authorization reference or rules of engagement ticket",
-            )
+        if role == "auditor":
+            st.info("ℹ️ Auditor mode: Scope registration is disabled (Read-Only).")
+        else:
+            with st.form("scope_registration_form"):
+                scope_id = st.text_input("Scope ID", value="scope-lab-01", help="Unique identifier for the engagement boundary")
+                name = st.text_input("Engagement Name / Owner", value="Authorized Practice Target Lab")
+                auth_ref = st.text_input(
+                    "Authorization Reference",
+                    value="AUTH-LAB-2026-PRACTICE",
+                    help="Written authorization reference or rules of engagement ticket",
+                )
 
-            targets_input = st.text_area(
-                "Authorized Targets (IPs, CIDRs, Hostnames, URLs - one per line)",
-                value="10.0.0.0/24\nlab.local\n192.168.1.10",
-                height=100,
-            )
+                targets_input = st.text_area(
+                    "Authorized Targets (IPs, CIDRs, Hostnames, URLs - one per line)",
+                    value="10.0.0.0/24\nlab.local\n192.168.1.10",
+                    height=100,
+                )
 
-            exclusions_input = st.text_area(
-                "Exclusions (Forbidden Hosts/IPs - one per line)",
-                value="10.0.0.254\n192.168.1.1",
-                height=70,
-                help="Hosts strictly excluded from scanning. Exclusions override allowed targets.",
-            )
+                exclusions_input = st.text_area(
+                    "Exclusions (Forbidden Hosts/IPs - one per line)",
+                    value="10.0.0.254\n192.168.1.1",
+                    height=70,
+                    help="Hosts strictly excluded from scanning. Exclusions override allowed targets.",
+                )
 
-            ports_input = st.text_input("Allowed Ports (comma-separated)", value="80, 443, 8080, 8443")
-            tool_choices = st.multiselect("Allowed Tools", ["nmap", "nikto", "zap"], default=["nmap", "nikto", "zap"])
+                ports_input = st.text_input("Allowed Ports (comma-separated)", value="80, 443, 8080, 8443")
+                tool_choices = st.multiselect("Allowed Tools", ["nmap", "nikto", "zap"], default=["nmap", "nikto", "zap"])
 
-            col_w1, col_w2 = st.columns(2)
-            with col_w1:
-                start_days = st.number_input("Valid From (Hours ago)", value=1, min_value=0)
-            with col_w2:
-                end_days = st.number_input("Valid To (Hours from now)", value=24, min_value=1)
+                col_w1, col_w2 = st.columns(2)
+                with col_w1:
+                    start_days = st.number_input("Valid From (Hours ago)", value=1, min_value=0)
+                with col_w2:
+                    end_days = st.number_input("Valid To (Hours from now)", value=24, min_value=1)
 
-            submit_scope = st.form_submit_button("Register Authorized Scope", type="primary")
+                submit_scope = st.form_submit_button("Register Authorized Scope", type="primary")
 
-            if submit_scope:
-                try:
-                    targets = [t.strip() for t in targets_input.splitlines() if t.strip()]
-                    exclusions = [e.strip() for e in exclusions_input.splitlines() if e.strip()]
-                    ports = [int(p.strip()) for p in ports_input.split(",") if p.strip().isdigit()]
+                if submit_scope:
+                    try:
+                        targets = [t.strip() for t in targets_input.splitlines() if t.strip()]
+                        exclusions = [e.strip() for e in exclusions_input.splitlines() if e.strip()]
+                        ports = [int(p.strip()) for p in ports_input.split(",") if p.strip().isdigit()]
 
-                    now = datetime.now(UTC)
-                    new_scope = Scope(
-                        id=scope_id.strip(),
-                        name=name.strip(),
-                        authorization_reference=auth_ref.strip(),
-                        targets=targets,
-                        exclusions=exclusions,
-                        allowed_ports=ports,
-                        tool_allowlist=tool_choices,
-                        window_start=now - timedelta(hours=int(start_days)),
-                        window_end=now + timedelta(hours=int(end_days)),
-                    )
-                    ctrl.register_scope(new_scope)
-                    st.success(f"✅ Scope `{new_scope.id}` registered successfully! Audit event committed.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Failed to register scope: {exc}")
+                        now = datetime.now(UTC)
+                        new_scope = Scope(
+                            id=scope_id.strip(),
+                            name=name.strip(),
+                            authorization_reference=auth_ref.strip(),
+                            targets=targets,
+                            exclusions=exclusions,
+                            allowed_ports=ports,
+                            tool_allowlist=tool_choices,
+                            window_start=now - timedelta(hours=int(start_days)),
+                            window_end=now + timedelta(hours=int(end_days)),
+                        )
+                        ctrl.register_scope(new_scope)
+                        st.success(f"✅ Scope `{new_scope.id}` registered successfully! Audit event committed.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Failed to register scope: {exc}")
 
     with col2:
         st.subheader("Registered Active Scopes")
@@ -210,31 +301,37 @@ def render_assessment_page(ctrl: UIController) -> None:
         index=0 if assessments else 0,
     )
 
+    user = get_current_user()
+    role = user["role"] if user else "auditor"
+
     if selected_assm_key == "__new__":
         st.subheader("Start New Assessment via Natural Language")
-        with st.form("intake_form"):
-            title = st.text_input("Assessment Title", value="Staging Environment Security Audit")
-            user_prompt = st.text_area(
-                "Assessment Request (Natural Language)",
-                value="Please perform a security assessment on 10.0.0.5 and 8.8.8.8 for open ports and OWASP Top 10 web flaws.",
-                height=100,
-                help="Notice what happens when 8.8.8.8 (out of scope) is entered!",
-            )
-            scope_choice = st.selectbox("Assign to Scope", [s.id for s in scopes])
-            submit_intake = st.form_submit_button("Submit Request & Parse Scope", type="primary")
+        if role == "auditor":
+            st.info("ℹ️ Auditor mode: Assessment intake is disabled (Read-Only).")
+        else:
+            with st.form("intake_form"):
+                title = st.text_input("Assessment Title", value="Staging Environment Security Audit")
+                user_prompt = st.text_area(
+                    "Assessment Request (Natural Language)",
+                    value="Please perform a security assessment on 10.0.0.5 and 8.8.8.8 for open ports and OWASP Top 10 web flaws.",
+                    height=100,
+                    help="Notice what happens when 8.8.8.8 (out of scope) is entered!",
+                )
+                scope_choice = st.selectbox("Assign to Scope", [s.id for s in scopes])
+                submit_intake = st.form_submit_button("Submit Request & Parse Scope", type="primary")
 
-            if submit_intake:
-                with st.spinner("Analyzing intake and verifying scope boundary..."):
-                    assm, req, refused = ctrl.submit_intake(
-                        user_request=user_prompt,
-                        title=title,
-                        scope_id=scope_choice,
-                    )
-                    st.session_state.current_assm_id = assm.id
-                    st.session_state.last_intake_req = req
-                    st.session_state.last_refused = refused
-                    st.success(f"Assessment `{assm.id}` created!")
-                    st.rerun()
+                if submit_intake:
+                    with st.spinner("Analyzing intake and verifying scope boundary..."):
+                        assm, req, refused = ctrl.submit_intake(
+                            user_request=user_prompt,
+                            title=title,
+                            scope_id=scope_choice,
+                        )
+                        st.session_state.current_assm_id = assm.id
+                        st.session_state.last_intake_req = req
+                        st.session_state.last_refused = refused
+                        st.success(f"Assessment `{assm.id}` created!")
+                        st.rerun()
 
     active_id = getattr(st.session_state, "current_assm_id", selected_assm_key if selected_assm_key != "__new__" else None)
 
@@ -259,7 +356,7 @@ def render_assessment_page(ctrl: UIController) -> None:
         with col_p1:
             st.write("Generate or update the adaptive execution plan based on current observations and policy constraints.")
         with col_p2:
-            gen_plan_btn = st.button("Generate Adaptive Plan 🧠", type="primary")
+            gen_plan_btn = st.button("Generate Adaptive Plan 🧠", type="primary", disabled=(role == "auditor"))
 
         if gen_plan_btn:
             with st.spinner("LLM generating plan proposal with authoritative server-side validation..."):
@@ -296,13 +393,19 @@ def render_assessment_page(ctrl: UIController) -> None:
 
             st.markdown("---")
             st.subheader("Human-In-The-Loop Plan Approval")
-            with st.form("plan_approval_form"):
-                analyst = st.text_input("Analyst Sign-off", value="analyst_operator")
-                reason = st.text_input("Approval Justification", value="Plan reviewed and approved within authorized practice scope.")
-                approve_btn = st.form_submit_button("Approve Plan for Execution ✅", type="primary")
-                if approve_btn:
-                    ctrl.approve_plan(active_id, decided_by=analyst, reason=reason)
-                    st.success("✅ Plan approved! Transitioned to execution phase. Head to '3. Plan Approvals & Execution'.")
+            if role != "lead_analyst":
+                st.warning("⚠️ Plan approval requires sign-off from a Lead Security Analyst. Operators and Auditors cannot approve plans (ERR-20).")
+            else:
+                with st.form("plan_approval_form"):
+                    st.caption(f"Approving as Lead Analyst: **{user['username']}**")
+                    reason = st.text_input("Approval Justification", value="Plan reviewed and approved within authorized practice scope.")
+                    approve_btn = st.form_submit_button("Approve Plan for Execution ✅", type="primary")
+                    if approve_btn:
+                        try:
+                            ctrl.approve_plan(active_id, decided_by=user["username"], reason=reason)
+                            st.success("✅ Plan approved! Transitioned to execution phase. Head to '3. Plan Approvals & Execution'.")
+                        except Exception as exc:
+                            st.error(f"Approval failed: {exc}")
 
 
 def render_execution_page(ctrl: UIController) -> None:
@@ -327,6 +430,9 @@ def render_execution_page(ctrl: UIController) -> None:
 
     st.markdown(f"**Status:** `{assm.status.value.upper()}` | **Target:** `{assm.target}` | **Scope:** `{assm.scope_id}`")
 
+    user = get_current_user()
+    role = user["role"] if user else "auditor"
+
     # Pending Approvals Gate (Master Plan §5.7 Human-in-the-loop)
     approvals = ctrl.repository.list_approvals(active_id)
     pending_approvals = [req for req, dec in approvals if dec is None]
@@ -337,33 +443,42 @@ def render_execution_page(ctrl: UIController) -> None:
             with st.form(f"approve_gate_{req.approval_id}"):
                 st.write(f"**Action Class:** `{req.action_class.value.upper()}` | **Tool:** `{req.tool}`")
                 st.write(f"**Target:** `{req.target}` | **Rationale:** {req.rationale}")
-                analyst = st.text_input("Approver Name", value="lead_analyst")
-                col_b1, col_b2 = st.columns(2)
-                with col_b1:
-                    app_btn = st.form_submit_button("Approve Action ✅", type="primary")
-                with col_b2:
-                    rej_btn = st.form_submit_button("Reject Action ❌")
+                if role != "lead_analyst":
+                    st.info("⚠️ Only a Lead Security Analyst can decide intrusive action approvals (ERR-20).")
+                else:
+                    st.caption(f"Deciding as Lead Analyst: **{user['username']}**")
+                    col_b1, col_b2 = st.columns(2)
+                    with col_b1:
+                        app_btn = st.form_submit_button("Approve Action ✅", type="primary")
+                    with col_b2:
+                        rej_btn = st.form_submit_button("Reject Action ❌")
 
-                if app_btn:
-                    ctrl.decide_validation(
-                        assessment_id=active_id,
-                        approval_id=req.approval_id,
-                        decision="approved",
-                        decided_by=analyst,
-                        reason="Analyst granted execution approval",
-                    )
-                    st.success("Action approved!")
-                    st.rerun()
-                elif rej_btn:
-                    ctrl.decide_validation(
-                        assessment_id=active_id,
-                        approval_id=req.approval_id,
-                        decision="rejected",
-                        decided_by=analyst,
-                        reason="Analyst denied execution",
-                    )
-                    st.warning("Action rejected and blocked from execution.")
-                    st.rerun()
+                    if app_btn:
+                        try:
+                            ctrl.decide_validation(
+                                assessment_id=active_id,
+                                approval_id=req.approval_id,
+                                decision="approved",
+                                decided_by=user["username"],
+                                reason="Lead Analyst granted execution approval",
+                            )
+                            st.success("Action approved!")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Approval failed: {exc}")
+                    elif rej_btn:
+                        try:
+                            ctrl.decide_validation(
+                                assessment_id=active_id,
+                                approval_id=req.approval_id,
+                                decision="rejected",
+                                decided_by=user["username"],
+                                reason="Lead Analyst rejected intrusive action",
+                            )
+                            st.info("Action rejected.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Rejection failed: {exc}")
     else:
         st.info("No actions currently awaiting per-step approval.")
 
@@ -594,6 +709,11 @@ def render_reports_page(ctrl: UIController) -> None:
 def main() -> None:
     """Streamlit Application Entrypoint."""
     ctrl = get_controller()
+
+    # Enforce session authentication barrier (ERR-01)
+    if not render_auth_barrier():
+        return
+
     selected_page = render_sidebar(ctrl)
 
     if selected_page == "1. Scope Boundary":

@@ -213,6 +213,23 @@ async def test_epss_fetch_successful():
     assert percentile is not None and abs(percentile - 0.99982) < 0.0001
 
 
+@pytest.mark.asyncio
+async def test_epss_fetch_url_encodes_cve():
+    """Safety break-it check: Special characters in CVE ID are URL-encoded against HPP (ERR-29 / E-02)."""
+    captured_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_urls.append(str(request.url))
+        return httpx.Response(200, json={"status": "OK", "data": []})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await fetch_epss("CVE-2021-41773&injected=true", client=client)
+
+    assert len(captured_urls) == 1
+    assert "CVE-2021-41773%26injected%3Dtrue" in captured_urls[0]
+    assert "&injected=true" not in captured_urls[0]
+
+
 def test_cisa_kev_membership(tmp_path: Path):
     """CISA KEV catalog identifies known exploited vulnerabilities."""
     snapshot_path = tmp_path / "cisa_kev_test.json"

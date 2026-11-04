@@ -14,6 +14,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -54,6 +55,7 @@ class LlmClient:
         secondary_key: str | None = None,
         secondary_model: str | None = None,
         call_budget: int | None = None,
+        max_output_tokens: int | None = None,
         cache_dir: Path | str | None = None,
         db_conn: sqlite3.Connection | None = None,
         raw_completion_fn: Callable[[str, str, str], str] | None = None,
@@ -77,42 +79,128 @@ class LlmClient:
         self.secondary_key = secondary_key or settings.gemini_api_key_secondary
         self.secondary_model = secondary_model or settings.gemini_model_secondary
         self.call_budget = call_budget or settings.llm_call_budget
+        self.max_output_tokens = max_output_tokens or settings.llm_max_output_tokens
 
         cache_path = cache_dir or settings.llm_cache_dir
         self.cache = PromptCache(cache_path)
         self.db_conn = db_conn
         self.raw_completion_fn = raw_completion_fn
         self._call_count = 0
+        self._genai_client: Any = None
+
+    def _get_genai_client(self, api_key: str) -> Any:
+        """Returns reusable google-genai client instance (ERR-10)."""
+        if self._genai_client is None:
+            from google import genai
+            self._genai_client = genai.Client(api_key=api_key)
+        return self._genai_client
+
+    def _get_call_count(self) -> int:
+        """Returns total call count for today from SQLite or in-memory count (ERR-25)."""
+        if self.db_conn is not None:
+            try:
+                period_key = datetime.now(UTC).strftime("%Y-%m-%d")
+                cursor = self.db_conn.cursor()
+                cursor.execute(
+                    "SELECT call_count FROM llm_budget WHERE period_key = ?",
+                    (period_key,),
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    return int(row[0])
+            except Exception:
+                pass
+        return self._call_count
+
+    def _increment_call_count(self) -> int:
+        """Increments and persists the call count in SQLite and in-memory (ERR-25)."""
+        self._call_count += 1
+        if self.db_conn is not None:
+            try:
+                period_key = datetime.now(UTC).strftime("%Y-%m-%d")
+                now_str = datetime.now(UTC).isoformat()
+                cursor = self.db_conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO llm_budget (period_key, call_count, updated_at)
+                    VALUES (?, 1, ?)
+                    ON CONFLICT(period_key) DO UPDATE SET
+                    call_count = call_count + 1,
+                    updated_at = excluded.updated_at
+                    """,
+                    (period_key, now_str),
+                )
+                self.db_conn.commit()
+            except Exception as exc:
+                logger.debug("Failed to persist call budget to SQLite: %s", exc)
+        return self._call_count
 
     def _execute_raw(
-        self, prompt: str, model: str, api_key: str, schema: Any = None
+        self,
+        prompt: str,
+        model: str,
+        api_key: str,
+        user_prompt: str | None = None,
+        system_instruction: str | None = None,
+        schema: Any = None,
     ) -> tuple[str, int]:
         """Calls backend with latency tracking."""
         start = time.perf_counter()
         if self.raw_completion_fn:
             result = self.raw_completion_fn(prompt, model, api_key)
         else:
-            result = self._call_google_genai(prompt, model, api_key, schema=schema)
+            result = self._call_google_genai(
+                user_prompt=user_prompt or prompt,
+                model=model,
+                api_key=api_key,
+                system_instruction=system_instruction,
+                schema=schema,
+            )
         latency_ms = int((time.perf_counter() - start) * 1000)
         return result, latency_ms
 
     def _call_google_genai(
-        self, prompt: str, model: str, api_key: str, schema: Any = None
+        self,
+        user_prompt: str,
+        model: str,
+        api_key: str,
+        system_instruction: str | None = None,
+        schema: Any = None,
     ) -> str:
-        """Invokes official google-genai client requesting structured JSON."""
-        from google import genai
+        """Invokes official google-genai client requesting structured JSON (ERR-10)."""
         from google.genai import types
 
-        client = genai.Client(api_key=api_key)
-        kwargs: dict[str, Any] = {"response_mime_type": "application/json"}
+        client = self._get_genai_client(api_key)
+        kwargs: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            "max_output_tokens": self.max_output_tokens,
+        }
+        if system_instruction is not None:
+            kwargs["system_instruction"] = system_instruction
         if schema is not None:
             kwargs["response_schema"] = schema
+
         config = types.GenerateContentConfig(**kwargs)
         response = client.models.generate_content(
             model=model,
-            contents=prompt,
+            contents=user_prompt,
             config=config,
         )
+
+        # Validate finish reason: treat non-STOP (e.g. MAX_TOKENS, SAFETY) as error (ERR-10)
+        if response.candidates:
+            candidate = response.candidates[0]
+            finish_reason = getattr(candidate, "finish_reason", None)
+            finish_str = str(finish_reason).upper()
+            if (
+                finish_reason is not None
+                and "STOP" not in finish_str
+                and finish_str != "FINISH_REASON_UNSPECIFIED"
+            ):
+                raise ValueError(
+                    f"LLM output incomplete or blocked by safety filter: finish_reason={finish_reason}"
+                )
+
         return response.text or "{}"
 
     def complete_json[T: BaseModel](
@@ -187,11 +275,12 @@ class LlmClient:
             except (ValidationError, json.JSONDecodeError):
                 pass
 
-        # 3. Check Call Budget
-        if self._call_count >= self.call_budget:
+        # 3. Check Call Budget (ERR-25)
+        current_calls = self._get_call_count()
+        if current_calls >= self.call_budget:
             logger.warning(
                 "LLM call budget exhausted (%d/%d)",
-                self._call_count,
+                current_calls,
                 self.call_budget,
             )
             if fallback_factory is not None:
@@ -245,47 +334,62 @@ class LlmClient:
             f"System Instructions:\n{clean_system}\n\nTask Query:\n{clean_user}"
         )
 
-        # Helper to execute with rate-limit failover
-        def execute_with_failover(
+        # Helper to execute with single-key exponential backoff retry (D-05, ERR-10)
+        def execute_with_retry(
             p_text: str,
+            u_text: str,
+            s_text: str,
         ) -> tuple[str, str, int]:
             used_model = self.primary_model
-            try:
-                self._call_count += 1
-                res, lat = self._execute_raw(
-                    p_text, self.primary_model, self.primary_key, schema=schema  # type: ignore[arg-type]
-                )
-                return res, used_model, lat
-            except Exception as exc:
-                err_str = str(exc)
-                should_failover = (
-                    "429" in err_str
-                    or "503" in err_str
-                    or "UNAVAILABLE" in err_str
-                    or "ResourceExhausted" in err_str
-                    or "high demand" in err_str.lower()
-                    or "quota" in err_str.lower()
-                    or "unavailable" in err_str.lower()
-                    or "overloaded" in err_str.lower()
-                )
-                if should_failover and (self.secondary_key or self.secondary_model != self.primary_model):
-                    logger.warning(
-                        "Primary Gemini model/key unavailable (%s); failing over to secondary (%s)",
-                        err_str[:80],
-                        self.secondary_model,
-                    )
-                    used_model = self.secondary_model
-                    sec_key = self.secondary_key or self.primary_key
-                    self._call_count += 1
+            max_retries = 2
+            delay = 1.0
+
+            for attempt in range(max_retries + 1):
+                try:
+                    self._increment_call_count()
                     res, lat = self._execute_raw(
-                        p_text, self.secondary_model, sec_key, schema=schema  # type: ignore[arg-type]
+                        prompt=p_text,
+                        model=used_model,
+                        api_key=self.primary_key,
+                        user_prompt=u_text,
+                        system_instruction=s_text,
+                        schema=schema,  # type: ignore[arg-type]
                     )
                     return res, used_model, lat
-                raise
+                except Exception as exc:
+                    is_rate_limit = False
+                    try:
+                        from google.genai import errors
+                        if isinstance(exc, errors.APIError) and exc.code == 429:
+                            is_rate_limit = True
+                    except ImportError:
+                        pass
+
+                    if not is_rate_limit:
+                        err_str = str(exc)
+                        if "429" in err_str or "ResourceExhausted" in err_str or "quota" in err_str.lower():
+                            is_rate_limit = True
+
+                    if is_rate_limit and attempt < max_retries:
+                        logger.warning(
+                            "Gemini rate limit encountered (HTTP 429). Retrying in %.1fs (attempt %d/%d)...",
+                            delay,
+                            attempt + 1,
+                            max_retries,
+                        )
+                        time.sleep(delay)
+                        delay *= 2.0
+                        continue
+                    raise
+            raise RuntimeError("Exhausted retries in execute_with_retry")
 
         # 5. First Attempt
         try:
-            raw_text, used_model, latency = execute_with_failover(full_prompt)
+            raw_text, used_model, latency = execute_with_retry(
+                p_text=full_prompt,
+                u_text=clean_user,
+                s_text=clean_system,
+            )
             data = schema.model_validate_json(raw_text)
             self.cache.set(prompt_hash, raw_text)
             write_llm_trace(
@@ -325,14 +429,21 @@ class LlmClient:
                 outcome="validation_retry",
                 assessment_id=assessment_id,
             )
+            retry_user = (
+                f"{clean_user}\n\n"
+                f"[Validation error in previous response: {val_err}. "
+                f"Please correct the output to strictly conform to the expected JSON schema.]"
+            )
             retry_prompt = (
                 f"{full_prompt}\n\n"
                 f"[Validation error in previous response: {val_err}. "
                 f"Please correct the output to strictly conform to the expected JSON schema.]"
             )
             try:
-                retry_text, used_model2, latency2 = execute_with_failover(
-                    retry_prompt
+                retry_text, used_model2, latency2 = execute_with_retry(
+                    p_text=retry_prompt,
+                    u_text=retry_user,
+                    s_text=clean_system,
                 )
                 data = schema.model_validate_json(retry_text)
                 self.cache.set(prompt_hash, retry_text)

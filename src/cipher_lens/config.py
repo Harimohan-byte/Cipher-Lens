@@ -62,6 +62,10 @@ class Settings(BaseSettings):
         default=30,
         validation_alias=AliasChoices("LLM_CALL_BUDGET", "CIPHER_LENS_LLM_CALL_BUDGET"),
     )
+    llm_max_output_tokens: int = Field(
+        default=2048,
+        validation_alias=AliasChoices("LLM_MAX_OUTPUT_TOKENS", "CIPHER_LENS_LLM_MAX_OUTPUT_TOKENS"),
+    )
     llm_cache_dir: str | None = Field(
         default=None,
         validation_alias=AliasChoices("LLM_CACHE_DIR", "CIPHER_LENS_LLM_CACHE_DIR"),
@@ -113,6 +117,10 @@ class Settings(BaseSettings):
     admin_token: str | None = Field(
         default=None,
         validation_alias=AliasChoices("ADMIN_TOKEN", "CIPHER_LENS_ADMIN_TOKEN"),
+    )
+    operator_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OPERATOR_TOKEN", "CIPHER_LENS_OPERATOR_TOKEN"),
     )
     auditor_token: str | None = Field(
         default=None,

@@ -140,22 +140,23 @@ def test_complete_json_invalid_schema_retry_exhausted_fallback(
     assert resp.data.priority == 1
 
 
-def test_dual_key_failover_on_rate_limit(test_db_conn: sqlite3.Connection) -> None:
-    """When primary key hits HTTP 429 quota exhaustion, failover to secondary key."""
+def test_dual_key_failover_on_rate_limit(
+    test_db_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When primary hits HTTP 429 quota limit, retry with exponential backoff on single key (D-05, ERR-10)."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
     calls = []
 
     def mock_backend(prompt: str, model: str, api_key: str) -> str:
         calls.append((model, api_key))
-        if api_key == "primary-key-1":
-            raise RuntimeError("429 ResourceExhausted: Quota exceeded for project")
+        if len(calls) == 1:
+            raise RuntimeError("429 ResourceExhausted: Quota exceeded")
         return '{"action": "secondary_scan", "target": "10.0.0.5", "priority": 7}'
 
     client = LlmClient(
         provider="mock",
         primary_key="primary-key-1",
-        primary_model="gemini-3.8-flash",
-        secondary_key="secondary-key-2",
-        secondary_model="gemini-3.5-flash-lite",
+        primary_model="gemini-2.5-flash",
         db_conn=test_db_conn,
         raw_completion_fn=mock_backend,
     )
@@ -168,11 +169,10 @@ def test_dual_key_failover_on_rate_limit(test_db_conn: sqlite3.Connection) -> No
     )
 
     assert resp.label == "live"
-    assert resp.model == "gemini-3.5-flash-lite"
     assert resp.data.action == "secondary_scan"
     assert len(calls) == 2
     assert calls[0][1] == "primary-key-1"
-    assert calls[1][1] == "secondary-key-2"
+    assert calls[1][1] == "primary-key-1"
 
 
 def test_call_budget_exhaustion_triggers_fallback(
@@ -286,3 +286,76 @@ def test_config_rejects_mock_provider_in_environment(
 
     with pytest.raises(ValidationError):
         Settings(llm_provider="mock")  # type: ignore[arg-type]
+
+
+def test_persisted_call_budget_across_client_instances(
+    test_db_conn: sqlite3.Connection,
+) -> None:
+    """Break-it test: LLM call budget is persisted in SQLite table llm_budget across client instances (ERR-25)."""
+    calls = 0
+
+    def mock_backend(prompt: str, model: str, api_key: str) -> str:
+        nonlocal calls
+        calls += 1
+        return '{"action": "scan", "target": "10.0.0.5", "priority": 1}'
+
+    # Client 1 makes 2 calls with budget of 2
+    client1 = LlmClient(
+        provider="mock",
+        primary_key="k1",
+        call_budget=2,
+        db_conn=test_db_conn,
+        raw_completion_fn=mock_backend,
+    )
+    r1 = client1.complete_json("s", "p1", SampleActionModel, fallback_action)
+    r2 = client1.complete_json("s", "p2", SampleActionModel, fallback_action)
+    assert r1.label == "live"
+    assert r2.label == "live"
+    assert calls == 2
+
+    # Verify count is stored in SQLite
+    cur = test_db_conn.execute("SELECT call_count FROM llm_budget")
+    row = cur.fetchone()
+    assert row is not None
+    assert row[0] == 2
+
+    # Client 2 instantiated (e.g. new session/controller restart) with same budget
+    # MUST see the persisted count and NOT allow new calls!
+    client2 = LlmClient(
+        provider="mock",
+        primary_key="k1",
+        call_budget=2,
+        db_conn=test_db_conn,
+        raw_completion_fn=mock_backend,
+    )
+    r3 = client2.complete_json("s", "p3", SampleActionModel, fallback_action)
+    assert r3.label == "rule-based"
+    assert r3.data.action == "rule_based_scan"
+    assert calls == 2  # Backend was never called again!
+
+
+def test_genai_non_stop_finish_reason_rejected():
+    """Break-it test: Non-STOP finish reasons (e.g. MAX_TOKENS) are treated as errors (ERR-10)."""
+    from unittest.mock import MagicMock
+
+    client = LlmClient(provider="gemini", primary_key="fake-key")
+
+    mock_candidate = MagicMock()
+    mock_candidate.finish_reason = "MAX_TOKENS"
+    mock_response = MagicMock()
+    mock_response.candidates = [mock_candidate]
+    mock_response.text = '{"action": "truncated...'
+
+    mock_genai_client = MagicMock()
+    mock_genai_client.models.generate_content.return_value = mock_response
+
+    client._genai_client = mock_genai_client
+
+    with pytest.raises(ValueError, match="incomplete or blocked"):
+        client._call_google_genai(
+            user_prompt="query",
+            model="gemini-2.5-flash",
+            api_key="fake-key",
+            system_instruction="sys",
+        )
+

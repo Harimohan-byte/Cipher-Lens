@@ -1,4 +1,4 @@
-"""Evidence and raw artifact storage with SHA-256 integrity verification."""
+"""Evidence and raw artifact storage with SHA-256 integrity verification and opt-in encryption."""
 
 import hashlib
 import os
@@ -7,7 +7,10 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel
+
+from cipher_lens.config import get_settings
 
 _EXTENSION_REGEX = re.compile(r"^[a-z0-9]{1,8}$")
 _ARTIFACT_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -22,14 +25,25 @@ class ArtifactMetadata(BaseModel):
     size_bytes: int
     file_path: str
     created_at: datetime
+    is_encrypted: bool = False
 
 
 class ArtifactStore:
-    """Manages raw scan artifacts and cryptographic integrity checks."""
+    """Manages raw scan artifacts, opt-in encryption at rest, and cryptographic integrity checks (ERR-14)."""
 
-    def __init__(self, base_dir: Path | str = "local_data/artifacts") -> None:
+    def __init__(
+        self,
+        base_dir: Path | str = "local_data/artifacts",
+        fernet_key: str | bytes | None = None,
+    ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        key = fernet_key or get_settings().fernet_key
+        if key:
+            key_bytes = key.encode("utf-8") if isinstance(key, str) else key
+            self._fernet: Fernet | None = Fernet(key_bytes)
+        else:
+            self._fernet = None
 
     def save_raw(
         self,
@@ -38,7 +52,7 @@ class ArtifactStore:
         run_id: str,
         extension: str = "txt",
     ) -> ArtifactMetadata:
-        """Saves raw tool output unmodified, computing SHA-256 and restricting file permissions."""
+        """Saves raw tool output unmodified or encrypted, computing SHA-256 on the original plaintext."""
         raw_bytes = content.encode("utf-8") if isinstance(content, str) else content
         sha256_hash = hashlib.sha256(raw_bytes).hexdigest()
         size_bytes = len(raw_bytes)
@@ -58,9 +72,12 @@ class ArtifactStore:
         if not target_path.is_relative_to(base_resolved):
             raise ValueError(f"Path traversal detected in artifact filename '{filename}'")
 
+        # Encrypt content if Fernet key is configured (ERR-14)
+        bytes_to_write = self._fernet.encrypt(raw_bytes) if self._fernet is not None else raw_bytes
+
         # Write content atomically
         with open(target_path, "wb") as f:
-            f.write(raw_bytes)
+            f.write(bytes_to_write)
 
         # Restrict permissions if supported (POSIX read-only for owner)
         try:
@@ -77,6 +94,7 @@ class ArtifactStore:
             size_bytes=size_bytes,
             file_path=str(target_path),
             created_at=datetime.now(UTC),
+            is_encrypted=self._fernet is not None,
         )
 
     def get_path(self, artifact_id: str) -> Path:
@@ -95,10 +113,17 @@ class ArtifactStore:
         raise FileNotFoundError(f"Artifact {artifact_id} not found in {self.base_dir}")
 
     def read_raw(self, artifact_id: str) -> bytes:
-        """Reads raw bytes for an artifact."""
+        """Reads raw bytes for an artifact, transparently decrypting if encrypted."""
         path = self.get_path(artifact_id)
         with open(path, "rb") as f:
-            return f.read()
+            data = f.read()
+        if self._fernet is not None:
+            try:
+                return self._fernet.decrypt(data)
+            except InvalidToken:
+                # If decryption fails (e.g. unencrypted legacy file), return data unmodified
+                return data
+        return data
 
     def verify(self, artifact_id: str, expected_sha256: str) -> bool:
         """Verifies an artifact's cryptographic integrity against the expected SHA-256."""
