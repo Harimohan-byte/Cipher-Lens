@@ -75,6 +75,7 @@ def test_parse_intake_with_mock_llm(
         }"""
 
     client = LlmClient(
+        provider="mock",
         primary_key="mock-key",
         raw_completion_fn=mock_backend,
     )
@@ -106,6 +107,7 @@ def test_parse_intake_refuses_out_of_scope_target(
         }"""
 
     client = LlmClient(
+        provider="mock",
         primary_key="mock-key",
         raw_completion_fn=mock_backend,
     )

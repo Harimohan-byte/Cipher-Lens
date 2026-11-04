@@ -45,6 +45,7 @@ def test_complete_json_success(test_db_conn: sqlite3.Connection) -> None:
         return '{"action": "port_scan", "target": "10.0.0.5", "priority": 5}'
 
     client = LlmClient(
+        provider="mock",
         primary_key="key-primary-123",
         primary_model="gemini-3.8-flash",
         db_conn=test_db_conn,
@@ -69,7 +70,7 @@ def test_complete_json_success(test_db_conn: sqlite3.Connection) -> None:
     cur = test_db_conn.execute("SELECT provider, model, outcome, label FROM llm_traces")
     row = cur.fetchone()
     assert row is not None
-    assert row[0] == "gemini"
+    assert row[0] == "mock"
     assert row[1] == "gemini-3.8-flash"
     assert row[2] == "success"
     assert row[3] == "live"
@@ -92,6 +93,7 @@ def test_complete_json_invalid_schema_retry_success(
         return '{"action": "port_scan", "target": "10.0.0.5", "priority": 3}'
 
     client = LlmClient(
+        provider="mock",
         primary_key="key-primary-123",
         primary_model="gemini-3.8-flash",
         db_conn=test_db_conn,
@@ -119,6 +121,7 @@ def test_complete_json_invalid_schema_retry_exhausted_fallback(
         return '{"invalid_field": "nonsense"}'
 
     client = LlmClient(
+        provider="mock",
         primary_key="key-primary-123",
         primary_model="gemini-3.8-flash",
         db_conn=test_db_conn,
@@ -148,6 +151,7 @@ def test_dual_key_failover_on_rate_limit(test_db_conn: sqlite3.Connection) -> No
         return '{"action": "secondary_scan", "target": "10.0.0.5", "priority": 7}'
 
     client = LlmClient(
+        provider="mock",
         primary_key="primary-key-1",
         primary_model="gemini-3.8-flash",
         secondary_key="secondary-key-2",
@@ -183,6 +187,7 @@ def test_call_budget_exhaustion_triggers_fallback(
         return '{"action": "scan", "target": "10.0.0.5", "priority": 2}'
 
     client = LlmClient(
+        provider="mock",
         primary_key="key-1",
         call_budget=2,
         db_conn=test_db_conn,
@@ -213,6 +218,7 @@ def test_prompt_hash_caching(test_db_conn: sqlite3.Connection, tmp_path: Any) ->
         return '{"action": "cached_scan", "target": "10.0.0.5", "priority": 4}'
 
     client = LlmClient(
+        provider="mock",
         primary_key="key-1",
         cache_dir=tmp_path / "llm_cache",
         db_conn=test_db_conn,
@@ -239,3 +245,44 @@ def test_llm_provider_none_deterministic_fallback(
     resp = client.complete_json("sys", "test", SampleActionModel, fallback_action)
     assert resp.label == "rule-based"
     assert resp.data.action == "rule_based_scan"
+
+
+def test_provider_none_ignores_raw_completion_fn_and_uses_fallback(
+    test_db_conn: sqlite3.Connection,
+) -> None:
+    """AGENTS.md Rule 13: Under provider='none', mock/raw backend is NEVER invoked."""
+    called = False
+
+    def mock_backend(prompt: str, model: str, api_key: str) -> str:
+        nonlocal called
+        called = True
+        return '{"action": "fake_live", "target": "10.0.0.5", "priority": 9}'
+
+    client = LlmClient(
+        provider="none",
+        db_conn=test_db_conn,
+        raw_completion_fn=mock_backend,
+    )
+
+    resp = client.complete_json("sys", "test", SampleActionModel, fallback_action)
+    assert not called, "raw_completion_fn must not be called when provider='none'"
+    assert resp.label == "rule-based"
+    assert resp.data.action == "rule_based_scan"
+
+
+def test_provider_mock_without_raw_fn_raises_error() -> None:
+    """Constructor-only provider='mock' requires raw_completion_fn."""
+    with pytest.raises(ValueError, match="raw_completion_fn was provided"):
+        LlmClient(provider="mock")
+
+
+def test_config_rejects_mock_provider_in_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Safety check: Environment variable LLM_PROVIDER=mock is strictly disallowed."""
+    from pydantic import ValidationError
+
+    from cipher_lens.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(llm_provider="mock")  # type: ignore[arg-type]
