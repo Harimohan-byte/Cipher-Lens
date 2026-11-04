@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -85,26 +85,29 @@ class LlmClient:
         self._call_count = 0
 
     def _execute_raw(
-        self, prompt: str, model: str, api_key: str
+        self, prompt: str, model: str, api_key: str, schema: Any = None
     ) -> tuple[str, int]:
         """Calls backend with latency tracking."""
         start = time.perf_counter()
         if self.raw_completion_fn:
             result = self.raw_completion_fn(prompt, model, api_key)
         else:
-            result = self._call_google_genai(prompt, model, api_key)
+            result = self._call_google_genai(prompt, model, api_key, schema=schema)
         latency_ms = int((time.perf_counter() - start) * 1000)
         return result, latency_ms
 
-    def _call_google_genai(self, prompt: str, model: str, api_key: str) -> str:
+    def _call_google_genai(
+        self, prompt: str, model: str, api_key: str, schema: Any = None
+    ) -> str:
         """Invokes official google-genai client requesting structured JSON."""
         from google import genai
         from google.genai import types
 
         client = genai.Client(api_key=api_key)
-        config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-        )
+        kwargs: dict[str, Any] = {"response_mime_type": "application/json"}
+        if schema is not None:
+            kwargs["response_schema"] = schema
+        config = types.GenerateContentConfig(**kwargs)
         response = client.models.generate_content(
             model=model,
             contents=prompt,
@@ -250,7 +253,7 @@ class LlmClient:
             try:
                 self._call_count += 1
                 res, lat = self._execute_raw(
-                    p_text, self.primary_model, self.primary_key  # type: ignore[arg-type]
+                    p_text, self.primary_model, self.primary_key, schema=schema  # type: ignore[arg-type]
                 )
                 return res, used_model, lat
             except Exception as exc:
@@ -275,7 +278,7 @@ class LlmClient:
                     sec_key = self.secondary_key or self.primary_key
                     self._call_count += 1
                     res, lat = self._execute_raw(
-                        p_text, self.secondary_model, sec_key  # type: ignore[arg-type]
+                        p_text, self.secondary_model, sec_key, schema=schema  # type: ignore[arg-type]
                     )
                     return res, used_model, lat
                 raise
