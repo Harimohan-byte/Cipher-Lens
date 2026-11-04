@@ -67,12 +67,12 @@ class LlmClient:
         self.primary_model = (
             primary_model
             or os.environ.get("GEMINI_MODEL_PRIMARY")
-            or os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+            or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
         )
         self.secondary_key = secondary_key or os.environ.get("GEMINI_API_KEY_SECONDARY")
         self.secondary_model = (
             secondary_model
-            or os.environ.get("GEMINI_MODEL_SECONDARY", "gemini-3.5-flash-lite")
+            or os.environ.get("GEMINI_MODEL_SECONDARY", "gemini-2.0-flash")
         )
 
         env_budget = os.environ.get("LLM_CALL_BUDGET")
@@ -255,20 +255,27 @@ class LlmClient:
                 return res, used_model, lat
             except Exception as exc:
                 err_str = str(exc)
-                is_rate_limit = (
+                should_failover = (
                     "429" in err_str
+                    or "503" in err_str
+                    or "UNAVAILABLE" in err_str
                     or "ResourceExhausted" in err_str
+                    or "high demand" in err_str.lower()
                     or "quota" in err_str.lower()
+                    or "unavailable" in err_str.lower()
+                    or "overloaded" in err_str.lower()
                 )
-                if is_rate_limit and self.secondary_key:
+                if should_failover and (self.secondary_key or self.secondary_model != self.primary_model):
                     logger.warning(
-                        "Primary key rate-limited; failing over to secondary key (%s)",
+                        "Primary Gemini model/key unavailable (%s); failing over to secondary (%s)",
+                        err_str[:80],
                         self.secondary_model,
                     )
                     used_model = self.secondary_model
+                    sec_key = self.secondary_key or self.primary_key
                     self._call_count += 1
                     res, lat = self._execute_raw(
-                        p_text, self.secondary_model, self.secondary_key
+                        p_text, self.secondary_model, sec_key  # type: ignore[arg-type]
                     )
                     return res, used_model, lat
                 raise
