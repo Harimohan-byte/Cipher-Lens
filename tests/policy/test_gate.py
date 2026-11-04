@@ -403,3 +403,72 @@ def test_credentials_redacted_in_audit_log(
     assert "super_secret_password_123" not in payload
     assert "<redacted>@" in payload
 
+
+def test_ipv4_mapped_ipv6_exclusion_bypass_prevented(policy_gate: PolicyGate):
+    """Break-it test: IPv4-mapped IPv6 cannot bypass exclusion list (ERR-17)."""
+    # 192.168.1.1 is excluded. An attacker uses ::ffff:192.168.1.1 or [::ffff:192.168.1.1]
+    dec = policy_gate.authorize(
+        target="[::ffff:192.168.1.1]",
+        port=80,
+        tool="nmap",
+        action_class=ActionClass.DISCOVERY,
+    )
+    assert dec.allowed is False
+    assert dec.rule_id == "EXCLUDED_TARGET"
+    assert "explicitly excluded" in dec.reason
+
+
+def test_idn_homograph_attack_normalized(sample_scope: Scope, audit_log: AuditLog):
+    """Break-it test: IDN homographs are normalized to punycode and cannot match ASCII targets (ERR-28)."""
+    # Register scope with ascii target "apple.local" only
+    scope = sample_scope.model_copy(
+        update={
+            "allowed_targets": ["apple.local"],
+            "exclusions": [],
+        }
+    )
+    registry = ScopeRegistry()
+    registry.register(scope)
+    gate = PolicyGate(
+        registry=registry,
+        audit_log=audit_log,
+        resolver=lambda h: ["192.168.1.10"],
+    )
+
+    # Attack: Cyrillic 'а' (U+0430) instead of latin 'a'
+    homograph_target = "\u0430pple.local"
+    parsed = parse_target(homograph_target)
+    assert parsed.host.startswith("xn--")
+
+    # Authorizing homograph must fail scope match
+    dec = gate.authorize(target=homograph_target, port=80, tool="nmap")
+    assert dec.allowed is False
+    assert dec.rule_id in ("NOT_IN_SCOPE", "DNS_RESOLUTION_OUT_OF_SCOPE")
+
+
+def test_dns_pinning_returns_pinned_ip(policy_gate: PolicyGate):
+    """Break-it test: Gate authorization returns pinned IP and resolved list (ERR-03)."""
+    dec = policy_gate.authorize(
+        target="app.local",
+        port=80,
+        tool="nmap",
+        action_class=ActionClass.DISCOVERY,
+    )
+    assert dec.allowed is True
+    assert dec.pinned_ip == "192.168.1.10"
+    assert dec.resolved_ips == ["192.168.1.10"]
+
+
+def test_cloud_metadata_hard_deny_in_gate(policy_gate: PolicyGate):
+    """Break-it test: Hard-deny networks (e.g. 169.254.169.254) are rejected unconditionally (ERR-02)."""
+    for bad_target in ["169.254.169.254", "http://169.254.169.254/latest/meta-data/", "metadata.google.internal"]:
+        dec = policy_gate.authorize(
+            target=bad_target,
+            port=80,
+            tool="nmap",
+            action_class=ActionClass.DISCOVERY,
+        )
+        assert dec.allowed is False
+        assert dec.rule_id in ("HARD_DENY_PROHIBITED_NETWORK", "PROHIBITED_METADATA_HOST")
+
+

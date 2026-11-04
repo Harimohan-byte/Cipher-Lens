@@ -168,3 +168,79 @@ def test_replay_fixture_files_by_path(
     assert len(findings) > 0
     all_findings = repo.list_findings(sample_assessment.id)
     assert len(all_findings) >= len(findings)
+
+
+def test_replay_drops_out_of_scope_findings_and_audits(
+    repo: AssessmentRepository,
+    artifact_store: ArtifactStore,
+    audit_log: AuditLog,
+    sample_assessment: Assessment,
+) -> None:
+    """Break-it test: Replay filters out-of-scope targets (drop, warn, audit) (ERR-05)."""
+    from cipher_lens.policy.scope import Scope
+
+    now = datetime.now(UTC)
+    # Scope only allows 192.168.99.0/24. Fixture nmap_synthetic is for 10.0.0.5 or 192.168.1.10
+    restricted_scope = Scope(
+        id="scope-restricted",
+        owner="tester",
+        authorization_reference="AUTH-RESTRICTED",
+        allowed_targets=["192.168.99.0/24"],
+        valid_from=now,
+        valid_to=now,
+    )
+    adapters = {"nmap": NmapAdapter()}
+    scoped_runner = ReplayRunner(
+        repository=repo,
+        artifact_store=artifact_store,
+        adapters=adapters,
+        risk_scorer=RiskScorer(),
+        audit_log=audit_log,
+        scope=restricted_scope,
+    )
+
+    nmap_xml = (FIXTURES_DIR / "nmap_synthetic.xml").read_bytes()
+    findings = scoped_runner.replay_artifact(
+        assessment_id=sample_assessment.id,
+        tool_name="nmap",
+        raw_content=nmap_xml,
+    )
+
+    # Findings should be dropped because target 192.168.1.10/10.0.0.5 is out of scope
+    assert len(findings) == 0
+
+    # Audit log must contain dropped event
+    events = audit_log.query(
+        assessment_id=sample_assessment.id,
+        event_type="replay_finding_dropped_out_of_scope",
+    )
+    assert len(events) > 0
+    assert events[0].payload["scope_id"] == "scope-restricted"
+
+
+def test_replay_rejects_sha256_mismatch(
+    replay_runner: ReplayRunner,
+    sample_assessment: Assessment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break-it test: Replay verifies SHA-256 integrity before parsing (ERR-05)."""
+    from cipher_lens.store.artifacts import ArtifactMetadata
+
+    fake_art = ArtifactMetadata(
+        artifact_id="art-fake-01",
+        run_id="run-fake-01",
+        source_tool="nmap",
+        sha256_hash="0" * 64,  # Intentionally wrong hash
+        size_bytes=10,
+        file_path="test.xml",
+        created_at=datetime.now(UTC),
+    )
+    monkeypatch.setattr(replay_runner.artifact_store, "save_raw", lambda **kwargs: fake_art)
+
+    with pytest.raises(ValueError, match="Artifact integrity failure"):
+        replay_runner.replay_artifact(
+            assessment_id=sample_assessment.id,
+            tool_name="nmap",
+            raw_content=b"<xml>content</xml>",
+        )
+

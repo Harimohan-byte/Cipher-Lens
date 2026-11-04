@@ -8,12 +8,19 @@ import ipaddress
 import re
 import socket
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+import idna
+
 from cipher_lens.models.plan import ActionClass
-from cipher_lens.policy.scope import Scope, ScopeRegistry
+from cipher_lens.policy.scope import (
+    HARD_DENY_NETWORKS,
+    PROHIBITED_METADATA_HOSTS,
+    Scope,
+    ScopeRegistry,
+)
 from cipher_lens.store.audit import AuditLog
 
 
@@ -34,6 +41,8 @@ class Decision:
     allowed: bool
     reason: str
     rule_id: str
+    pinned_ip: str | None = None
+    resolved_ips: list[str] = field(default_factory=list)
 
 
 def redact_target(raw_target: str) -> str:
@@ -46,10 +55,25 @@ def redact_target(raw_target: str) -> str:
     return clean
 
 
+def canonicalize_ip(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Canonicalizes IP addresses, converting IPv4-mapped IPv6, 6to4, or NAT64 to IPv4 (ERR-17)."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped:
+            return ip.ipv4_mapped
+        if ip in ipaddress.ip_network("2002::/16"):
+            return ipaddress.IPv4Address(ip.packed[2:6])
+        if ip in ipaddress.ip_network("64:ff9b::/96"):
+            return ipaddress.IPv4Address(ip.packed[12:16])
+    return ip
+
+
 def parse_target(raw_target: str) -> ParsedTarget:
     """Safely extracts the destination host and port from a target string.
 
     Strips scheme, userinfo (e.g. user@host tricks), paths, queries, and fragments.
+    Normalizes domain names via IDN UTS #46 to prevent homograph bypasses (ERR-28).
     """
     clean_target = raw_target.strip()
     port: int | None = None
@@ -92,6 +116,12 @@ def parse_target(raw_target: str) -> ParsedTarget:
     # Normalize host: lowercase and strip trailing FQDN dot
     host = host.rstrip(".").lower()
     is_ip = _is_ip(host)
+    if not is_ip and host:
+        try:
+            host = idna.encode(host, uts46=True).decode("ascii")
+        except Exception as exc:
+            raise ValueError(f"Invalid domain name or IDN encoding failed for '{host}': {exc}") from exc
+
     return ParsedTarget(raw=raw_target, host=host, port=port, is_ip=is_ip)
 
 
@@ -105,18 +135,27 @@ def _is_ip(candidate: str) -> bool:
 
 
 def _ip_matches_entry(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address, entry: str) -> bool:
-    """Checks if an IP matches an allowed or excluded entry (exact IP or CIDR network)."""
+    """Checks if an IP matches an allowed or excluded entry (exact IP or CIDR network).
+
+    Both the target IP and entry are canonicalized (e.g. ::ffff:10.0.0.1 -> 10.0.0.1) (ERR-17).
+    """
     clean_entry = entry.strip()
+    canon_target = canonicalize_ip(ip_obj)
     if "/" in clean_entry:
         try:
             net = ipaddress.ip_network(clean_entry, strict=False)
-            return ip_obj.version == net.version and ip_obj in net
+            if canon_target.version == net.version and canon_target in net:
+                return True
+            if ip_obj.version == net.version and ip_obj in net:
+                return True
+            return False
         except ValueError:
             return False
     else:
         try:
             target_ip = ipaddress.ip_address(clean_entry)
-            return ip_obj == target_ip
+            canon_entry = canonicalize_ip(target_ip)
+            return canon_target == canon_entry or ip_obj == target_ip
         except ValueError:
             return False
 
@@ -185,6 +224,32 @@ class PolicyGate:
             self._audit(decision, target, port, tool, action_class, assessment_id)
             return decision
 
+        # Global hard-deny and cloud metadata checks (ERR-02)
+        if parsed.host in PROHIBITED_METADATA_HOSTS:
+            decision = Decision(
+                allowed=False,
+                reason=f"Target host '{parsed.host}' is a prohibited cloud metadata destination",
+                rule_id="PROHIBITED_METADATA_HOST",
+            )
+            self._audit(decision, target, port, tool, action_class, assessment_id)
+            return decision
+
+        if parsed.is_ip:
+            try:
+                raw_ip = ipaddress.ip_address(parsed.host)
+                canon_ip = canonicalize_ip(raw_ip)
+                for deny in HARD_DENY_NETWORKS:
+                    if canon_ip in deny or raw_ip in deny:
+                        decision = Decision(
+                            allowed=False,
+                            reason=f"Target IP '{canon_ip}' is within prohibited network '{deny}'",
+                            rule_id="HARD_DENY_PROHIBITED_NETWORK",
+                        )
+                        self._audit(decision, target, port, tool, action_class, assessment_id)
+                        return decision
+            except ValueError:
+                pass
+
         if parsed.port is not None and port is not None and parsed.port != port:
             decision = Decision(
                 allowed=False,
@@ -214,9 +279,16 @@ class PolicyGate:
                 "TOOL_NOT_ALLOWED",
                 "EXPIRED_VALIDITY_WINDOW",
                 "DNS_RESOLUTION_OUT_OF_SCOPE",
+                "PUBLIC_TARGET_NOT_ALLOWED",
+                "HARD_DENY_PROHIBITED_NETWORK",
+                "PROHIBITED_METADATA_HOST",
             ):
                 best_decision = decision
-                if decision.rule_id == "EXCLUDED_TARGET":
+                if decision.rule_id in (
+                    "EXCLUDED_TARGET",
+                    "HARD_DENY_PROHIBITED_NETWORK",
+                    "PROHIBITED_METADATA_HOST",
+                ):
                     break
 
         self._audit(best_decision, target, effective_port, tool, action_class, assessment_id)
@@ -241,11 +313,38 @@ class PolicyGate:
                 rule_id="INVALID_TARGET",
             )
 
+        if parsed.host in PROHIBITED_METADATA_HOSTS:
+            return Decision(
+                allowed=False,
+                reason=f"Target host '{parsed.host}' is a prohibited cloud metadata destination",
+                rule_id="PROHIBITED_METADATA_HOST",
+            )
+        if parsed.is_ip:
+            try:
+                raw_ip = ipaddress.ip_address(parsed.host)
+                canon_ip = canonicalize_ip(raw_ip)
+                for deny in HARD_DENY_NETWORKS:
+                    if canon_ip in deny or raw_ip in deny:
+                        return Decision(
+                            allowed=False,
+                            reason=f"Target IP '{canon_ip}' is within prohibited network '{deny}'",
+                            rule_id="HARD_DENY_PROHIBITED_NETWORK",
+                        )
+            except ValueError:
+                pass
+
         best_decision = Decision(
             allowed=False,
             reason=f"Target '{target}' (host '{parsed.host}') is not in registered scope",
             rule_id="NOT_IN_SCOPE",
         )
+
+        pinned_candidate: str | None = None
+        if parsed.is_ip:
+            try:
+                pinned_candidate = str(canonicalize_ip(ipaddress.ip_address(parsed.host)))
+            except ValueError:
+                pass
 
         for scope in scopes:
             if not scope.is_valid_at():
@@ -269,6 +368,8 @@ class PolicyGate:
                         allowed=True,
                         reason=f"Target '{parsed.host}' authorized within scope '{scope.id}'",
                         rule_id="ALLOW_EXACT",
+                        pinned_ip=pinned_candidate,
+                        resolved_ips=[pinned_candidate] if pinned_candidate else [],
                     )
 
             # IP / CIDR check
@@ -289,6 +390,8 @@ class PolicyGate:
                                 allowed=True,
                                 reason=f"Target '{parsed.host}' authorized within scope '{scope.id}'",
                                 rule_id="ALLOW_CIDR",
+                                pinned_ip=pinned_candidate,
+                                resolved_ips=[pinned_candidate] if pinned_candidate else [],
                             )
                 except ValueError:
                     pass
@@ -319,6 +422,14 @@ class PolicyGate:
                 rule_id="TOOL_NOT_ALLOWED",
             )
 
+        # Check prohibited cloud metadata hostnames
+        if parsed.host in PROHIBITED_METADATA_HOSTS:
+            return Decision(
+                allowed=False,
+                reason=f"Target host '{parsed.host}' is a prohibited cloud metadata destination",
+                rule_id="PROHIBITED_METADATA_HOST",
+            )
+
         # 3. Resolve IPs if hostname
         ips_to_check: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
         if parsed.is_ip:
@@ -342,6 +453,23 @@ class PolicyGate:
                     rule_id="DNS_RESOLUTION_FAILED",
                 )
 
+        # Hard-deny networks & metadata check for all resolved/target IPs (ERR-02)
+        for ip_obj in ips_to_check:
+            canon = canonicalize_ip(ip_obj)
+            for deny in HARD_DENY_NETWORKS:
+                if canon in deny or ip_obj in deny:
+                    return Decision(
+                        allowed=False,
+                        reason=f"Resolved/target IP '{canon}' is within prohibited network '{deny}'",
+                        rule_id="HARD_DENY_PROHIBITED_NETWORK",
+                    )
+            if str(canon) in PROHIBITED_METADATA_HOSTS:
+                return Decision(
+                    allowed=False,
+                    reason=f"Resolved/target IP '{canon}' is a prohibited cloud metadata destination",
+                    rule_id="PROHIBITED_METADATA_HOST",
+                )
+
         # 4. Exclusions strictly beat allows
         for exclusion in scope.exclusions:
             clean_ex = exclusion.strip().rstrip(".").lower()
@@ -358,7 +486,7 @@ class PolicyGate:
                     return Decision(
                         allowed=False,
                         reason=(
-                            f"Resolved IP '{ip_obj}' for target '{parsed.host}' "
+                            f"Resolved IP '{canonicalize_ip(ip_obj)}' for target '{parsed.host}' "
                             f"is explicitly excluded in scope '{scope.id}'"
                         ),
                         rule_id="EXCLUDED_TARGET",
@@ -384,11 +512,25 @@ class PolicyGate:
                 return Decision(
                     allowed=False,
                     reason=(
-                        f"{'Target IP' if parsed.is_ip else 'Resolved IP'} '{ip_obj}' for target '{parsed.host}' "
+                        f"{'Target IP' if parsed.is_ip else 'Resolved IP'} '{canonicalize_ip(ip_obj)}' for target '{parsed.host}' "
                         f"is not in registered scope '{scope.id}'"
                     ),
                     rule_id=rule,
                 )
+
+        # Routable public ranges require explicit allow_public_targets flag on Scope
+        if not scope.allow_public_targets:
+            for ip_obj in ips_to_check:
+                canon = canonicalize_ip(ip_obj)
+                if not (canon.is_private or canon.is_loopback):
+                    return Decision(
+                        allowed=False,
+                        reason=(
+                            f"Routable public IP '{canon}' for target '{parsed.host}' "
+                            f"requires allow_public_targets=True on scope '{scope.id}'"
+                        ),
+                        rule_id="PUBLIC_TARGET_NOT_ALLOWED",
+                    )
 
         # 6. Allowed ports check for targets within scope
         if scope.allowed_ports:
@@ -411,10 +553,15 @@ class PolicyGate:
                     rule_id="PORT_NOT_ALLOWED",
                 )
 
+        pinned_ip = str(canonicalize_ip(ips_to_check[0]))
+        resolved_ips = [str(canonicalize_ip(ip)) for ip in ips_to_check]
+
         return Decision(
             allowed=True,
             reason=f"Target '{parsed.host}' authorized within scope '{scope.id}'",
             rule_id="ALLOW_EXACT" if direct_match else "ALLOW_CIDR",
+            pinned_ip=pinned_ip,
+            resolved_ips=resolved_ips,
         )
 
     def _audit(
@@ -439,6 +586,7 @@ class PolicyGate:
             "allowed": decision.allowed,
             "reason": decision.reason,
             "rule_id": decision.rule_id,
+            "pinned_ip": decision.pinned_ip,
         }
         self.audit_log.append(
             actor="policy_gate",

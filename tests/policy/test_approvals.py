@@ -276,3 +276,77 @@ def test_unclassified_action_class_fails_closed(approval_manager: ApprovalManage
     with pytest.raises(ApprovalRequiredError, match="unclassified action class"):
         approval_manager.require(mock_step, assessment_id="asmt-001")
 
+
+def test_separation_of_duties_prevents_self_approval(
+    audit_log: AuditLog, intrusive_step: PlanStep
+):
+    """Break-it test: Requesters cannot approve their own requests (ERR-20)."""
+    from cipher_lens.config import Settings
+    from cipher_lens.policy.approvals import ApprovalError
+
+    strict_mgr = ApprovalManager(
+        audit_log=audit_log,
+        settings=Settings(allow_self_approval=False),
+    )
+    req = strict_mgr.request_approval(
+        intrusive_step,
+        assessment_id="asmt-001",
+        requested_by="alice",
+    )
+
+    # Alice trying to approve her own request must fail
+    with pytest.raises(ApprovalError, match="Separation of duties violation"):
+        strict_mgr.decide(
+            approval_id=req.approval_id,
+            decision="approved",
+            decided_by="alice",
+            reason="I self-authorize this scan",
+        )
+
+
+def test_separation_of_duties_allowed_when_flag_enabled(
+    audit_log: AuditLog, intrusive_step: PlanStep
+):
+    """Self-approval is permitted when ALLOW_SELF_APPROVAL=true."""
+    from cipher_lens.config import Settings
+
+    permissive_mgr = ApprovalManager(
+        audit_log=audit_log,
+        settings=Settings(allow_self_approval=True),
+    )
+    req = permissive_mgr.request_approval(
+        intrusive_step,
+        assessment_id="asmt-001",
+        requested_by="alice",
+    )
+
+    dec = permissive_mgr.decide(
+        approval_id=req.approval_id,
+        decision="approved",
+        decided_by="alice",
+        reason="Permitted in standalone test mode",
+    )
+    assert dec.decision == "approved"
+
+
+def test_approval_expiration_blocks_execution(
+    approval_manager: ApprovalManager, intrusive_step: PlanStep
+):
+    """Break-it test: Expired approvals are rejected at runtime."""
+    from datetime import UTC, datetime, timedelta
+
+    req = approval_manager.request_approval(intrusive_step, assessment_id="asmt-001")
+    past_time = datetime.now(UTC) - timedelta(minutes=5)
+
+    approval_manager.decide(
+        approval_id=req.approval_id,
+        decision="approved",
+        decided_by="lead",
+        reason="Approved but expired",
+        expires_at=past_time,
+    )
+
+    with pytest.raises(ApprovalRequiredError, match="expired"):
+        approval_manager.require(intrusive_step, assessment_id="asmt-001")
+
+

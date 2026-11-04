@@ -18,6 +18,9 @@ class ApprovalRequest(BaseModel):
     target: str
     rationale: str
     requested_at: datetime
+    requested_by: str = "operator"
+    plan_hash: str | None = None
+    scope_hash: str | None = None
     status: Literal["pending", "approved", "rejected"] = "pending"
 
 
@@ -29,3 +32,6 @@ class ApprovalDecision(BaseModel):
     reason: str
     decided_at: datetime
     notes: str | None = None
+    plan_hash: str | None = None
+    scope_hash: str | None = None
+    expires_at: datetime | None = None

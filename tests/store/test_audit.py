@@ -430,3 +430,158 @@ def test_init_db_idempotency(db_conn: sqlite3.Connection):
     verification = log.verify_chain()
     assert verification.ok is True
     assert verification.rows_checked == 1
+
+
+def test_checkpoint_write_and_verify_ok(audit_log: AuditLog, tmp_path: Path):
+    """Test 14: Writing an external checkpoint anchor and verifying it succeeds."""
+    ckpt_path = tmp_path / "checkpoint.json"
+    for i in range(5):
+        audit_log.append(actor="tester", event_type="ckpt_test", payload={"i": i})
+
+    head_hash = audit_log.write_checkpoint(ckpt_path)
+    assert ckpt_path.is_file()
+
+    result = audit_log.verify_checkpoint(ckpt_path)
+    assert result.ok is True
+    assert result.rows_checked == 5
+    assert result.head_hash == head_hash
+
+
+def test_checkpoint_tail_truncation_detected_break_it(
+    db_conn: sqlite3.Connection, audit_log: AuditLog, tmp_path: Path
+):
+    """Test 15 (ERR-21 Break-it): Tail truncation is undetected by internal verify_chain,
+
+    but MUST be detected by verify_checkpoint.
+    """
+    ckpt_path = tmp_path / "checkpoint.json"
+    for i in range(1, 6):
+        audit_log.append(actor="tester", event_type="trunc_test", payload={"i": i})
+
+    audit_log.write_checkpoint(ckpt_path)
+
+    # Attacker drops DELETE trigger and truncates rows 4 and 5
+    cursor = db_conn.cursor()
+    cursor.execute("DROP TRIGGER IF EXISTS audit_log_no_delete")
+    cursor.execute("DELETE FROM audit_log WHERE id >= 4")
+
+    # Internal chain verification passes for remaining 3 rows!
+    internal_res = audit_log.verify_chain()
+    assert internal_res.ok is True
+    assert internal_res.rows_checked == 3
+
+    # But external checkpoint verification detects the truncation attack!
+    external_res = audit_log.verify_checkpoint(ckpt_path)
+    assert external_res.ok is False
+    assert "truncated" in external_res.reason.lower()
+    assert external_res.rows_checked == 3
+
+
+def test_checkpoint_rewrite_recomputation_detected_break_it(
+    db_conn: sqlite3.Connection, audit_log: AuditLog, tmp_path: Path
+):
+    """Test 16 (ERR-21 Break-it): Chain rewritten and recomputed passes internal verify_chain,
+
+    but MUST fail verify_checkpoint against the external anchor.
+    """
+    ckpt_path = tmp_path / "checkpoint.json"
+    for i in range(1, 4):
+        audit_log.append(actor="tester", event_type="rewrite_test", payload={"i": i})
+
+    audit_log.write_checkpoint(ckpt_path)
+
+    # Attacker drops UPDATE trigger, modifies row 2, and recomputes hashes forward
+    cursor = db_conn.cursor()
+    cursor.execute("DROP TRIGGER IF EXISTS audit_log_no_update")
+
+    # Modify row 2
+    cursor.execute("SELECT ts, actor, event_type, assessment_id FROM audit_log WHERE id = 2")
+    ts2, actor2, ev2, asmt2 = cursor.fetchone()
+    # Row 1's hash is unchanged
+    cursor.execute("SELECT row_hash FROM audit_log WHERE id = 1")
+    row1_hash = cursor.fetchone()[0]
+
+    forged_payload2 = {"i": 999}
+    dict2 = {
+        "id": 2,
+        "ts": ts2,
+        "actor": actor2,
+        "event_type": ev2,
+        "assessment_id": asmt2,
+        "payload": forged_payload2,
+    }
+    recomputed_hash2 = hashlib.sha256((row1_hash + canonical_json(dict2)).encode("utf-8")).hexdigest()
+    cursor.execute(
+        "UPDATE audit_log SET payload = ?, prev_hash = ?, row_hash = ? WHERE id = 2",
+        (canonical_json(forged_payload2), row1_hash, recomputed_hash2),
+    )
+
+    # Recompute row 3
+    cursor.execute("SELECT ts, actor, event_type, assessment_id, payload FROM audit_log WHERE id = 3")
+    ts3, actor3, ev3, asmt3, p3 = cursor.fetchone()
+    dict3 = {
+        "id": 3,
+        "ts": ts3,
+        "actor": actor3,
+        "event_type": ev3,
+        "assessment_id": asmt3,
+        "payload": json.loads(p3),
+    }
+    recomputed_hash3 = hashlib.sha256((recomputed_hash2 + canonical_json(dict3)).encode("utf-8")).hexdigest()
+    cursor.execute(
+        "UPDATE audit_log SET prev_hash = ?, row_hash = ? WHERE id = 3",
+        (recomputed_hash2, recomputed_hash3),
+    )
+
+    # Internal verify_chain is fooled by the recomputation!
+    internal_res = audit_log.verify_chain()
+    assert internal_res.ok is True
+
+    # Checkpoint anchor detects the rewrite!
+    external_res = audit_log.verify_checkpoint(ckpt_path)
+    assert external_res.ok is False
+    assert "mismatch" in external_res.reason.lower()
+
+
+def test_checkpoint_subsequent_appends_still_verify(
+    audit_log: AuditLog, tmp_path: Path
+):
+    """Test 17: Valid subsequent appends do not invalidate an earlier valid checkpoint anchor."""
+    ckpt_path = tmp_path / "checkpoint.json"
+    audit_log.append(actor="tester", event_type="e1", payload={"step": 1})
+    audit_log.append(actor="tester", event_type="e2", payload={"step": 2})
+
+    audit_log.write_checkpoint(ckpt_path)
+
+    # Append more rows
+    audit_log.append(actor="tester", event_type="e3", payload={"step": 3})
+    audit_log.append(actor="tester", event_type="e4", payload={"step": 4})
+
+    result = audit_log.verify_checkpoint(ckpt_path)
+    assert result.ok is True
+    assert result.rows_checked == 4
+
+
+def test_checkpoint_missing_or_corrupt_fails_safely(
+    audit_log: AuditLog, tmp_path: Path
+):
+    """Test 18: Missing or malformed checkpoint file fails cleanly with ok=False."""
+    # Missing file
+    res1 = audit_log.verify_checkpoint(tmp_path / "nonexistent.json")
+    assert res1.ok is False
+    assert "not found" in res1.reason.lower()
+
+    # Corrupted JSON
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("{not json", encoding="utf-8")
+    res2 = audit_log.verify_checkpoint(bad_json)
+    assert res2.ok is False
+    assert "malformed" in res2.reason.lower()
+
+    # Missing fields
+    missing_fields = tmp_path / "missing.json"
+    missing_fields.write_text("{}", encoding="utf-8")
+    res3 = audit_log.verify_checkpoint(missing_fields)
+    assert res3.ok is False
+    assert "missing" in res3.reason.lower()
+

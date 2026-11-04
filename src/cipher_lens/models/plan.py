@@ -35,3 +35,16 @@ class PlanStep(BaseModel):
     expected_outcome: str
     nist_phase: Literal["planning", "discovery", "attack", "reporting"]
     idempotency_key: str | None = None
+
+
+class AuthorizedStep(BaseModel):
+    """An authorized, pinned, and gate-verified execution step (ERR-03, ERR-04).
+
+    Only created by PolicyGate and ApprovalManager. Required by ToolRunner.
+    """
+    step: PlanStep
+    pinned_ip: str
+    scope_id: str
+    scope_hash: str
+    approval_id: str | None = None
+

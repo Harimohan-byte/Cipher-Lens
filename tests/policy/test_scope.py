@@ -84,3 +84,48 @@ def test_scope_validation_rejects_naive_datetime_and_inverted_window():
             valid_to=now_aware,
         )
 
+
+def test_scope_rejects_wildcard_and_broad_cidrs():
+    """Break-it test: Broad CIDRs (e.g. /0, /1) are strictly rejected (ERR-02)."""
+    import pytest
+    from pydantic import ValidationError
+
+    for broad_cidr in ["0.0.0.0/0", "0.0.0.0/1", "128.0.0.0/1", "::/0"]:
+        with pytest.raises(ValidationError, match="is too broad"):
+            Scope(
+                id="wildcard-scope",
+                owner="Adversary",
+                authorization_reference="AUTH-FAKE",
+                allowed_targets=[broad_cidr],
+            )
+
+
+def test_scope_rejects_cloud_metadata_hard_deny():
+    """Break-it test: 169.254/16 and cloud metadata are permanently blocked (ERR-02)."""
+    import pytest
+    from pydantic import ValidationError
+
+    for blocked in ["169.254.169.254", "169.254.0.0/16", "metadata.google.internal"]:
+        with pytest.raises(ValidationError, match="prohibited"):
+            Scope(
+                id="metadata-scope",
+                owner="Attacker",
+                authorization_reference="AUTH-FAKE",
+                allowed_targets=[blocked],
+            )
+
+
+def test_scope_public_target_requires_explicit_flag():
+    """Public routable targets mandate allow_public_targets=True (ERR-02)."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="requires allow_public_targets=True"):
+        Scope(
+            id="public-scope",
+            owner="Operator",
+            authorization_reference="AUTH-PUB",
+            allowed_targets=["8.8.8.8"],
+            allow_public_targets=False,
+        )
+

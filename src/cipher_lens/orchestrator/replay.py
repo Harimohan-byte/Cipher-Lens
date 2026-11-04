@@ -7,6 +7,7 @@ Invariants:
 4. Full offline safety: execution never spawns live scanner processes.
 """
 
+import hashlib
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -14,12 +15,14 @@ from pathlib import Path
 from typing import Any
 
 from cipher_lens.adapters.base import BaseAdapter
+from cipher_lens.adapters.imports.common import is_target_in_scope
 from cipher_lens.correlate.dedup import correlate_findings
 from cipher_lens.correlate.risk import RiskScorer
 from cipher_lens.enrichment.service import EnrichmentService
 from cipher_lens.models.assessment import StepRun
 from cipher_lens.models.findings import Evidence, Finding, RawFinding
 from cipher_lens.models.plan import ActionClass, PlanStep
+from cipher_lens.policy.scope import Scope
 from cipher_lens.store.artifacts import ArtifactStore
 from cipher_lens.store.audit import AuditLog
 from cipher_lens.store.repository import AssessmentRepository
@@ -56,6 +59,7 @@ class ReplayRunner:
         risk_scorer: RiskScorer | None = None,
         enrichment_service: EnrichmentService | None = None,
         audit_log: AuditLog | None = None,
+        scope: Scope | None = None,
     ) -> None:
         self.repository = repository
         self.artifact_store = artifact_store
@@ -63,6 +67,7 @@ class ReplayRunner:
         self.risk_scorer = risk_scorer
         self.enrichment_service = enrichment_service
         self.audit_log = audit_log
+        self.scope = scope
 
     def replay_artifact(
         self,
@@ -71,7 +76,10 @@ class ReplayRunner:
         raw_content: bytes,
         filename: str = "recorded_output.xml",
     ) -> list[Finding]:
-        """Ingests a recorded scan output artifact with origin='replayed'."""
+        """Ingests a recorded scan output artifact with origin='replayed'.
+
+        Verifies SHA-256 before parsing and applies drop/warn/audit scope filtering (ERR-05).
+        """
         ext = filename.split(".")[-1] if "." in filename else "txt"
         stored_art = self.artifact_store.save_raw(
             content=raw_content,
@@ -79,6 +87,14 @@ class ReplayRunner:
             run_id=f"replay_{tool_name}_{uuid.uuid4().hex[:6]}",
             extension=ext,
         )
+
+        # Integrity check: verify stored SHA-256 matches content (ERR-05)
+        calc_sha = hashlib.sha256(raw_content).hexdigest()
+        if calc_sha != stored_art.sha256_hash:
+            raise ValueError(
+                f"Artifact integrity failure (ERR-05): calculated SHA-256 {calc_sha} "
+                f"does not match stored artifact SHA-256 {stored_art.sha256_hash}"
+            )
 
         ev_meta = Evidence(
             id=f"ev_rep_{uuid.uuid4().hex[:8]}",
@@ -103,12 +119,40 @@ class ReplayRunner:
         if not raw_findings:
             return []
 
-        # 1. Normalize with replayed origin stamp
+        # Scope filtering: drop, warn, and audit out-of-scope targets (ERR-05)
+        filtered_raw_findings: list[RawFinding] = []
         for rf in raw_findings:
+            target_str = rf.asset.ip or rf.asset.host or ""
+            if self.scope is not None and not is_target_in_scope(target_str, self.scope):
+                logger.warning(
+                    "Replay dropped out-of-scope finding '%s' for target '%s'",
+                    rf.title,
+                    target_str,
+                )
+                if self.audit_log is not None:
+                    self.audit_log.append(
+                        actor="replay_runner",
+                        event_type="replay_finding_dropped_out_of_scope",
+                        payload={
+                            "tool": tool_name,
+                            "target": target_str,
+                            "finding_title": rf.title,
+                            "scope_id": self.scope.id,
+                        },
+                        assessment_id=assessment_id,
+                    )
+                continue
+            filtered_raw_findings.append(rf)
+
+        if not filtered_raw_findings:
+            return []
+
+        # 1. Normalize with replayed origin stamp
+        for rf in filtered_raw_findings:
             rf.raw_evidence.origin = "replayed"
 
         # 2. Correlate
-        correlated = correlate_findings(raw_findings)
+        correlated = correlate_findings(filtered_raw_findings)
 
         # 3. Score & Persist (merging with existing findings by correlation_key)
         existing_findings = {

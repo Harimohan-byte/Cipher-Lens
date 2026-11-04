@@ -25,7 +25,7 @@ from cipher_lens.enrichment.service import EnrichmentService
 from cipher_lens.models.findings import Evidence, Finding, RawFinding
 from cipher_lens.models.plan import PlanStep
 from cipher_lens.orchestrator.events import AssessmentEvent, EventBus
-from cipher_lens.orchestrator.runner import ToolRunner
+from cipher_lens.orchestrator.runner import RateLimiter, ToolRunner
 from cipher_lens.policy.approvals import ApprovalError, ApprovalManager
 from cipher_lens.policy.gate import PolicyGate
 from cipher_lens.policy.scope import ScopeRegistry
@@ -179,14 +179,27 @@ class OrchestrationEngine:
                 duration_seconds=0.0,
             )
 
-        # 4. Execute step via ToolRunner with in-flight task tracking
+        # 4. Wire rate limiter from scope/settings if runner doesn't have one (ERR-19)
+        if self.runner.rate_limiter is None and self.scope_registry is not None:
+            assm = self.repo.get_assessment(assessment_id)
+            scope = None
+            if assm and assm.scope_id:
+                scope = self.scope_registry.get(assm.scope_id)
+            if scope is None:
+                all_scopes = self.scope_registry.list_all()
+                if all_scopes:
+                    scope = all_scopes[0]
+            if scope and scope.rate_limit:
+                self.runner.rate_limiter = RateLimiter(rate_limit=scope.rate_limit)
+
+        # 5. Execute step via ToolRunner with in-flight task tracking
         self._emit(assessment_id, "step_started", {"step_id": step_id, "tool": step.tool})
         task = asyncio.current_task()
         if task is not None:
             self._inflight_tasks[idem_key] = task
 
         try:
-            exec_result = await self.runner.run(step, assessment_id=assessment_id)
+            exec_result = await self.runner.run(step, adapter=adapter, assessment_id=assessment_id)
         finally:
             self._inflight_tasks.pop(idem_key, None)
 

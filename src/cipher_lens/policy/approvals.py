@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from cipher_lens.config import Settings, get_settings
 from cipher_lens.models.approvals import ApprovalDecision, ApprovalRequest
 from cipher_lens.models.plan import ActionClass, PlanStep
 from cipher_lens.store.audit import AuditLog
@@ -38,8 +39,13 @@ def requires_plan_approval(action_class: ActionClass) -> bool:
 class ApprovalManager:
     """Manages human approval requests, final decisions, and execution gating."""
 
-    def __init__(self, audit_log: AuditLog | None = None) -> None:
+    def __init__(
+        self,
+        audit_log: AuditLog | None = None,
+        settings: Settings | None = None,
+    ) -> None:
         self.audit_log = audit_log
+        self.settings = settings or get_settings()
         self._plan_approvals: dict[str, ApprovalDecision] = {}
         self._step_requests: dict[str, ApprovalRequest] = {}
         self._step_to_approval: dict[tuple[str, str], str] = {}
@@ -51,8 +57,22 @@ class ApprovalManager:
         decided_by: str,
         reason: str,
         notes: str | None = None,
+        requested_by: str = "operator",
+        plan_hash: str | None = None,
+        scope_hash: str | None = None,
+        expires_at: datetime | None = None,
     ) -> ApprovalDecision:
         """Approves the overall assessment plan, authorizing discovery and scan steps."""
+        if (
+            not self.settings.allow_self_approval
+            and requested_by
+            and decided_by == requested_by
+        ):
+            raise ApprovalError(
+                f"Separation of duties violation (ERR-20): plan approver '{decided_by}' "
+                f"cannot be the plan requester '{requested_by}' without ALLOW_SELF_APPROVAL=true"
+            )
+
         if assessment_id in self._plan_approvals:
             existing = self._plan_approvals[assessment_id]
             if existing.decision != "approved":
@@ -69,6 +89,9 @@ class ApprovalManager:
             reason=reason,
             decided_at=now,
             notes=notes,
+            plan_hash=plan_hash,
+            scope_hash=scope_hash,
+            expires_at=expires_at,
         )
         self._plan_approvals[assessment_id] = decision
         self._audit(
@@ -79,6 +102,8 @@ class ApprovalManager:
                 "approval_id": decision.approval_id,
                 "reason": reason,
                 "notes": notes,
+                "plan_hash": plan_hash,
+                "scope_hash": scope_hash,
             },
             assessment_id=assessment_id,
         )
@@ -90,6 +115,8 @@ class ApprovalManager:
         decided_by: str,
         reason: str,
         notes: str | None = None,
+        plan_hash: str | None = None,
+        scope_hash: str | None = None,
     ) -> ApprovalDecision:
         """Rejects the assessment plan; discovery and scan steps will be blocked."""
         if assessment_id in self._plan_approvals:
@@ -108,6 +135,8 @@ class ApprovalManager:
             reason=reason,
             decided_at=now,
             notes=notes,
+            plan_hash=plan_hash,
+            scope_hash=scope_hash,
         )
         self._plan_approvals[assessment_id] = decision
         self._audit(
@@ -118,19 +147,32 @@ class ApprovalManager:
                 "approval_id": decision.approval_id,
                 "reason": reason,
                 "notes": notes,
+                "plan_hash": plan_hash,
+                "scope_hash": scope_hash,
             },
             assessment_id=assessment_id,
         )
         return decision
 
     def is_plan_approved(self, assessment_id: str) -> bool:
-        """Returns True if the assessment plan has been explicitly approved."""
-        return (
-            assessment_id in self._plan_approvals
-            and self._plan_approvals[assessment_id].decision == "approved"
-        )
+        """Returns True if the assessment plan has been explicitly approved and not expired."""
+        if assessment_id not in self._plan_approvals:
+            return False
+        decision = self._plan_approvals[assessment_id]
+        if decision.decision != "approved":
+            return False
+        if decision.expires_at is not None and datetime.now(UTC) > decision.expires_at:
+            return False
+        return True
 
-    def request_approval(self, step: PlanStep, assessment_id: str) -> ApprovalRequest:
+    def request_approval(
+        self,
+        step: PlanStep,
+        assessment_id: str,
+        requested_by: str = "operator",
+        plan_hash: str | None = None,
+        scope_hash: str | None = None,
+    ) -> ApprovalRequest:
         """Registers a pending approval request for a restricted action step."""
         key = (assessment_id, step.step_id)
         if key in self._step_to_approval:
@@ -158,13 +200,16 @@ class ApprovalManager:
             target=step.target,
             rationale=step.rationale,
             requested_at=now,
+            requested_by=requested_by,
+            plan_hash=plan_hash,
+            scope_hash=scope_hash,
             status="pending",
         )
         self._step_requests[approval_id] = request
         self._step_to_approval[key] = approval_id
 
         self._audit(
-            actor="orchestrator",
+            actor=requested_by,
             event_type="approval_requested",
             payload={
                 "approval_id": approval_id,
@@ -174,6 +219,9 @@ class ApprovalManager:
                 "tool": step.tool,
                 "target": step.target,
                 "rationale": step.rationale,
+                "requested_by": requested_by,
+                "plan_hash": plan_hash,
+                "scope_hash": scope_hash,
             },
             assessment_id=assessment_id,
         )
@@ -186,13 +234,27 @@ class ApprovalManager:
         decided_by: str,
         reason: str,
         notes: str | None = None,
+        expires_at: datetime | None = None,
     ) -> ApprovalDecision:
         """Records a human decision for a pending approval request.
 
         Decisions are immutable and final; a rejected approval cannot be changed.
+        Enforces separation of duties: decided_by cannot match requested_by unless configured.
         """
         if approval_id not in self._step_requests:
             raise KeyError(f"Approval request '{approval_id}' not found")
+
+        req = self._step_requests[approval_id]
+        if (
+            decision == "approved"
+            and not self.settings.allow_self_approval
+            and req.requested_by
+            and decided_by == req.requested_by
+        ):
+            raise ApprovalError(
+                f"Separation of duties violation (ERR-20): approver '{decided_by}' "
+                f"cannot be the requester '{req.requested_by}' without ALLOW_SELF_APPROVAL=true"
+            )
 
         # Idempotency and finality checks
         if approval_id in self._decisions:
@@ -212,11 +274,13 @@ class ApprovalManager:
             reason=reason,
             decided_at=now,
             notes=notes,
+            plan_hash=req.plan_hash,
+            scope_hash=req.scope_hash,
+            expires_at=expires_at,
         )
         self._decisions[approval_id] = dec_record
 
         # Update the request status
-        req = self._step_requests[approval_id]
         self._step_requests[approval_id] = req.model_copy(update={"status": decision})
 
         self._audit(
@@ -230,6 +294,8 @@ class ApprovalManager:
                 "decision": decision,
                 "reason": reason,
                 "notes": notes,
+                "plan_hash": req.plan_hash,
+                "scope_hash": req.scope_hash,
             },
             assessment_id=req.assessment_id,
         )
@@ -238,7 +304,7 @@ class ApprovalManager:
     def require(self, step: PlanStep, assessment_id: str | None = None) -> None:
         """Enforces approval gates prior to step execution.
 
-        Raises ApprovalRequiredError or ApprovalRejectedError if unapproved.
+        Raises ApprovalRequiredError or ApprovalRejectedError if unapproved or expired.
         """
         if requires_per_step_approval(step.action_class):
             if assessment_id is None:
@@ -279,6 +345,12 @@ class ApprovalManager:
                     f"Step '{step.step_id}' ({step.action_class.value}) "
                     f"was rejected: {reason}"
                 )
+            if req.status == "approved":
+                dec = self._decisions.get(appr_id)
+                if dec and dec.expires_at is not None and datetime.now(UTC) > dec.expires_at:
+                    raise ApprovalRequiredError(
+                        f"Step '{step.step_id}' approval has expired at {dec.expires_at}"
+                    )
             return
 
         if requires_plan_approval(step.action_class):
@@ -299,7 +371,7 @@ class ApprovalManager:
                     )
                 raise ApprovalRequiredError(
                     f"Step '{step.step_id}' ({step.action_class.value}) "
-                    f"requires plan approval for assessment '{assessment_id}'"
+                    f"requires plan approval for assessment '{assessment_id}' (or approval expired)"
                 )
             return
 

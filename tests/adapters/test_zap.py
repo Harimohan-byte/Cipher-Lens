@@ -310,3 +310,47 @@ def test_parse_zap_alerts_json():
     assert "syntax error" in sqli.raw_evidence.snippet
     assert sqli.asset.port == 8080
     assert sqli.asset.url_path == "/login.php"
+
+
+def test_zap_anchored_target_and_exclusion_regexes():
+    """Break-it test: ZAP context regexes are strictly anchored and scheme-agnostic (ERR-16)."""
+    import re
+
+    from cipher_lens.adapters.zap import build_zap_exclusion_regex, build_zap_target_regex
+
+    target_regex = build_zap_target_regex("http://example.com:8080/app")
+    # Matches exact target and subpaths
+    assert re.match(target_regex, "http://example.com:8080/app/login")
+    assert re.match(target_regex, "http://example.com:8080/")
+
+    # Strictly rejects unanchored suffix spoofing (e.g. example.com.evil.com)
+    assert not re.match(target_regex, "http://example.com:8080.evil.com/")
+    assert not re.match(target_regex, "http://example.com.evil.com:8080/")
+
+    # Exclusion regex matches scheme-agnostically
+    excl_regex = build_zap_exclusion_regex("admin.example.com")
+    assert re.match(excl_regex, "http://admin.example.com/logout")
+    assert re.match(excl_regex, "https://admin.example.com:8443/logout")
+    assert not re.match(excl_regex, "http://admin.example.com.evil.com/")
+
+
+@pytest.mark.asyncio
+async def test_zap_pre_phase_dns_rebinding_detected(tmp_path: Path):
+    """Break-it test: Pre-phase DNS re-resolution detects IP drift and aborts (ERR-03)."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    store = ArtifactStore(base_dir=tmp_path / "artifacts")
+
+    # Mock resolver returns rebinding IP
+    def poisoned_resolver(host):
+        return ["93.184.216.34"]  # Changed from pinned 10.0.0.5
+
+    adapter = ZapAdapter(client=client, dns_resolver=poisoned_resolver)
+    step = _make_step(target="http://app.local:8080")
+    step.params["pinned_ip"] = "10.0.0.5"
+
+    ctx = ExecutionContext(artifact_store=store)
+    result = await adapter.run(step=step, ctx=ctx)
+
+    assert result.status == "failed"
+    assert "DNS rebinding detected" in result.stderr
+

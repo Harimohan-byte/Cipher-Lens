@@ -6,11 +6,14 @@
 """OWASP ZAP adapter and REST API integration."""
 
 import asyncio
+import ipaddress
 import json
 import os
 import re
+import socket
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal
 from urllib.parse import urlsplit
@@ -65,6 +68,41 @@ class ZapParams(BaseModel):
     poll_interval_seconds: float = Field(default=0.5, ge=0.01, le=10.0)
     max_poll_seconds: float = Field(default=60.0, ge=1.0, le=600.0)
     exclusions: list[str] = Field(default_factory=list)
+
+
+def _is_ip(candidate: str) -> bool:
+    try:
+        ipaddress.ip_address(candidate)
+        return True
+    except ValueError:
+        return False
+
+
+def _default_resolver(host: str) -> list[str]:
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        return sorted({info[4][0] for info in infos})
+    except Exception as exc:
+        raise ValueError(f"DNS resolution failed for '{host}': {exc}") from exc
+
+
+def build_zap_target_regex(target_url: str) -> str:
+    """Anchors context regex to exact origin to prevent prefix spoofing (ERR-16)."""
+    clean = target_url.strip()
+    parsed = urlsplit(clean)
+    scheme = parsed.scheme or "http"
+    netloc = parsed.netloc or parsed.path.split("/")[0]
+    origin = f"{scheme}://{netloc}"
+    return f"^{re.escape(origin)}(?:/.*)?$"
+
+
+def build_zap_exclusion_regex(exclusion: str) -> str:
+    """Builds scheme-agnostic exclusion regex for ZAP context boundaries (ERR-16)."""
+    clean = exclusion.strip()
+    if "://" in clean:
+        clean = urlsplit(clean).netloc or clean.split("://", 1)[1]
+    clean = clean.split("/")[0]
+    return f"^https?://{re.escape(clean)}(?::\\d+)?(?:/.*)?$"
 
 
 def _parse_url_asset(url: str) -> Asset:
@@ -200,6 +238,7 @@ class ZapAdapter(BaseAdapter):
         client: httpx.AsyncClient | None = None,
         approval_manager: ApprovalManager | None = None,
         default_timeout: float = 30.0,
+        dns_resolver: Callable[[str], list[str]] | None = None,
     ) -> None:
         self.base_url = (
             base_url
@@ -209,6 +248,7 @@ class ZapAdapter(BaseAdapter):
         self.api_key = api_key or os.environ.get("CIPHER_LENS_ZAP_API_KEY", "")
         self.approval_manager = approval_manager
         self.default_timeout = default_timeout
+        self.dns_resolver = dns_resolver or _default_resolver
         self._client = client
 
     def _url(self, path: str) -> str:
@@ -293,6 +333,22 @@ class ZapAdapter(BaseAdapter):
         should_close = self._client is None
 
         try:
+            # Pre-phase DNS check (ERR-03)
+            pinned_ip = step.params.get("pinned_ip")
+            if pinned_ip:
+                target_host = urlsplit(params.target).hostname
+                if target_host and not _is_ip(target_host):
+                    try:
+                        resolved_ips = self.dns_resolver(target_host)
+                        if pinned_ip not in resolved_ips:
+                            raise ValueError(
+                                f"DNS rebinding detected during ZAP pre-phase check (ERR-03): "
+                                f"target '{target_host}' re-resolved to {resolved_ips}, "
+                                f"which does not match pinned IP '{pinned_ip}'"
+                            )
+                    except Exception as exc:
+                        raise ValueError(f"DNS check failed during ZAP pre-phase check: {exc}") from exc
+
             # 1. Create Bounded Context
             ctx_name = params.context_name or f"ctx_{uuid.uuid4().hex[:8]}"
             await client.get(
@@ -300,16 +356,16 @@ class ZapAdapter(BaseAdapter):
                 params={"contextName": ctx_name},
             )
 
-            # Restrict context regex strictly to target URL
-            target_regex = f"^{re.escape(params.target)}.*"
+            # Restrict context regex strictly to target origin (ERR-16)
+            target_regex = build_zap_target_regex(params.target)
             await client.get(
                 self._url("/JSON/context/action/includeInContext/"),
                 params={"contextName": ctx_name, "regex": target_regex},
             )
 
-            # Exclude exclusions from context
+            # Exclude exclusions from context (ERR-16)
             for excl in params.exclusions:
-                excl_regex = f"^{re.escape(excl)}.*"
+                excl_regex = build_zap_exclusion_regex(excl)
                 await client.get(
                     self._url("/JSON/context/action/excludeFromContext/"),
                     params={"contextName": ctx_name, "regex": excl_regex},

@@ -230,6 +230,92 @@ async def test_orchestrator_engine_flow_and_idempotency(tmp_path):
     assert "step_skipped_duplicate" in event_types
 
 
+@pytest.mark.asyncio
+async def test_engine_wires_rate_limiter_from_scope(tmp_path):
+    """Break-it test: OrchestrationEngine wires RateLimiter to ToolRunner from Scope (ERR-19)."""
+    db_file = tmp_path / "test_rate_wire.db"
+    conn = connect(db_file)
+    init_db(conn)
+
+    repo = AssessmentRepository(conn)
+    scope = Scope(
+        id="scope-rate-wire",
+        owner="Security",
+        authorization_reference="AUTH-RATE-WIRE",
+        allowed_targets=["10.0.0.5"],
+        rate_limit=7,
+        valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2026, 12, 31, tzinfo=UTC),
+    )
+    registry = ScopeRegistry()
+    registry.register(scope)
+
+    audit = AuditLog(conn=conn)
+    gate = PolicyGate(registry=registry, audit_log=audit)
+    approvals = ApprovalManager(audit_log=audit)
+    approvals.approve_plan(assessment_id="assm-rate-01", decided_by="admin", reason="ok")
+    artifacts = ArtifactStore(base_dir=tmp_path / "artifacts")
+    runner = ToolRunner(
+        artifact_store=artifacts,
+        audit_log=audit,
+        policy_gate=gate,
+        approval_manager=approvals,
+    )
+    assert runner.rate_limiter is None
+
+    from cipher_lens.adapters.nmap import NmapAdapter
+    from cipher_lens.models.assessment import Assessment, AssessmentStatus
+
+    assm = Assessment(
+        id="assm-rate-01",
+        title="Rate Test",
+        target="10.0.0.5",
+        scope_id="scope-rate-wire",
+        status=AssessmentStatus.PLANNING,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    repo.create_assessment(assm)
+
+    engine = OrchestrationEngine(
+        repository=repo,
+        scope_registry=registry,
+        policy_gate=gate,
+        approval_manager=approvals,
+        artifact_store=artifacts,
+        runner=runner,
+        adapters={"nmap": NmapAdapter()},
+    )
+
+    from unittest.mock import AsyncMock
+
+    from cipher_lens.adapters.base import ExecutionResult
+    runner.run = AsyncMock(
+        return_value=ExecutionResult(
+            status="succeeded",
+            stdout="ok",
+            stderr="",
+            exit_code=0,
+            duration_seconds=0.1,
+        )
+    )
+
+    step = PlanStep(
+        step_id="step-rate-01",
+        tool="nmap",
+        action_class=ActionClass.DISCOVERY,
+        target="10.0.0.5",
+        params={"target": "10.0.0.5", "profile": "discovery"},
+        rationale="Discovery",
+        expected_outcome="ports",
+        nist_phase="discovery",
+    )
+
+    await engine.execute_step("assm-rate-01", step)
+    assert runner.rate_limiter is not None
+    assert runner.rate_limiter.rate_limit == 7
+
+
 
 def test_grounding_validator_passes_valid_text():
     """GroundingValidator verifies that referenced CVEs and finding IDs exist in database findings."""

@@ -1,4 +1,4 @@
-# DECISION: this detects edited rows, middle deletions and reordering, but NOT truncation of the tail or a full rewrite; head_hash exists so the UI and report can display it.
+# DECISION: verify_chain() detects edited rows, middle deletions and reordering; external checkpoints (write_checkpoint / verify_checkpoint) anchor the chain against tail truncation or full database rewrites (ERR-21).
 """Append-only, hash-chained audit logging and verification for Cipher-Lens."""
 
 import hashlib
@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -383,3 +384,120 @@ class AuditLog:
             reason="Chain verified successfully",
             head_hash=head_hash,
         )
+
+    def write_checkpoint(self, checkpoint_path: Path | str) -> str:
+        """Writes an external cryptographic anchor containing the current head hash and row count (ERR-21)."""
+        path = Path(checkpoint_path)
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, row_hash FROM audit_log ORDER BY id DESC LIMIT 1")
+        last_row = cursor.fetchone()
+        if last_row is None:
+            rows_checked = 0
+            head_hash = GENESIS_HASH
+        else:
+            rows_checked = last_row[0]
+            head_hash = last_row[1]
+
+        checkpoint_data = {
+            "timestamp": datetime.now(UTC).isoformat(timespec="microseconds"),
+            "head_hash": head_hash,
+            "rows_checked": rows_checked,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(canonical_json(checkpoint_data), encoding="utf-8")
+        return head_hash
+
+    def verify_checkpoint(self, checkpoint_path: Path | str) -> ChainVerification:
+        """Verifies the audit chain integrity against a persisted external checkpoint anchor (ERR-21).
+
+        Detects tail truncation, row deletion, and recalculation/rewriting attacks.
+        """
+        path = Path(checkpoint_path)
+        if not path.is_file():
+            return ChainVerification(
+                ok=False,
+                rows_checked=0,
+                first_bad_id=None,
+                reason=f"Checkpoint file not found: {path}",
+                head_hash=GENESIS_HASH,
+            )
+
+        try:
+            content = path.read_text(encoding="utf-8")
+            data = json.loads(content)
+        except Exception as exc:
+            return ChainVerification(
+                ok=False,
+                rows_checked=0,
+                first_bad_id=None,
+                reason=f"Malformed checkpoint file: {exc}",
+                head_hash=GENESIS_HASH,
+            )
+
+        if not isinstance(data, dict):
+            return ChainVerification(
+                ok=False,
+                rows_checked=0,
+                first_bad_id=None,
+                reason="Checkpoint content is not a JSON object",
+                head_hash=GENESIS_HASH,
+            )
+
+        expected_head = data.get("head_hash")
+        expected_rows = data.get("rows_checked")
+        if not isinstance(expected_head, str) or not isinstance(expected_rows, int):
+            return ChainVerification(
+                ok=False,
+                rows_checked=0,
+                first_bad_id=None,
+                reason="Checkpoint missing required 'head_hash' or 'rows_checked' fields",
+                head_hash=GENESIS_HASH,
+            )
+
+        # Run full internal chain verification
+        result = self.verify_chain()
+        if not result.ok:
+            return result
+
+        # Check for truncation attack where tail rows were deleted
+        if result.rows_checked < expected_rows:
+            return ChainVerification(
+                ok=False,
+                rows_checked=result.rows_checked,
+                first_bad_id=result.rows_checked + 1 if result.rows_checked > 0 else 1,
+                reason=(
+                    f"Audit chain truncated: expected at least {expected_rows} rows from anchor, "
+                    f"found {result.rows_checked}"
+                ),
+                head_hash=result.head_hash,
+            )
+
+        # If checkpoint anchored an empty log
+        if expected_rows == 0:
+            if expected_head != GENESIS_HASH:
+                return ChainVerification(
+                    ok=False,
+                    rows_checked=result.rows_checked,
+                    first_bad_id=None,
+                    reason=f"Checkpoint genesis head mismatch: expected {expected_head}",
+                    head_hash=result.head_hash,
+                )
+        else:
+            # Check the hash of the row at expected_rows
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT row_hash FROM audit_log WHERE id = ?", (expected_rows,))
+            anchor_row = cursor.fetchone()
+            if anchor_row is None or anchor_row[0] != expected_head:
+                actual_hash = anchor_row[0] if anchor_row else "missing"
+                return ChainVerification(
+                    ok=False,
+                    rows_checked=result.rows_checked,
+                    first_bad_id=expected_rows,
+                    reason=(
+                        f"Anchor row {expected_rows} hash mismatch: "
+                        f"expected {expected_head}, found {actual_hash}"
+                    ),
+                    head_hash=result.head_hash,
+                )
+
+        return result

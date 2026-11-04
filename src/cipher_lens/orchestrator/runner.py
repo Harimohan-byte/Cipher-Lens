@@ -21,7 +21,7 @@ from cipher_lens.adapters.base import (
 )
 from cipher_lens.models.plan import PlanStep
 from cipher_lens.policy.approvals import ApprovalManager
-from cipher_lens.policy.gate import PolicyGate, redact_target
+from cipher_lens.policy.gate import PolicyGate, parse_target, redact_target
 from cipher_lens.store.artifacts import ArtifactStore
 from cipher_lens.store.audit import AuditLog
 
@@ -149,17 +149,16 @@ class ToolRunner:
         audit_log: AuditLog | None = None,
         rate_limiter: RateLimiter | None = None,
         default_timeout: float = 300.0,
-        allow_ungated: bool = False,
+        **kwargs: Any,
     ) -> None:
-        if not allow_ungated and (policy_gate is None or approval_manager is None):
-            missing = []
-            if policy_gate is None:
-                missing.append("policy_gate")
-            if approval_manager is None:
-                missing.append("approval_manager")
+        if "allow_ungated" in kwargs:
             raise ValueError(
-                f"ToolRunner requires {', '.join(missing)} for safe execution. "
-                "Explicitly set allow_ungated=True if running unchaperoned tests."
+                "Safety violation (ERR-04): 'allow_ungated' has been permanently removed. "
+                "Tool execution mandates active PolicyGate and ApprovalManager."
+            )
+        if policy_gate is None or approval_manager is None:
+            raise ValueError(
+                "ToolRunner mandates active PolicyGate and ApprovalManager for safe execution."
             )
 
         self.artifact_store = artifact_store
@@ -168,7 +167,6 @@ class ToolRunner:
         self.audit_log = audit_log
         self.rate_limiter = rate_limiter
         self.default_timeout = default_timeout
-        self.allow_ungated = allow_ungated
 
     async def execute(
         self,
@@ -183,7 +181,7 @@ class ToolRunner:
         """Executes a scanner command safely using an argv list.
 
         Enforces policy gate authorization, approval requirements, rate limiting,
-        timeout kills, artifact capture, and hash-chained audit logging.
+        DNS pinning, timeout kills, artifact capture, and hash-chained audit logging.
         """
         # 1. Enforce strict argv validation (AGENTS.md Rule 1)
         if not isinstance(argv, list):
@@ -197,36 +195,51 @@ class ToolRunner:
                 )
 
         # 2. Enforce Policy Gate (AGENTS.md Rule 2)
-        if self.policy_gate is not None:
-            port = step.params.get("port") or step.params.get("ports")
-            port_int: int | None = None
-            if isinstance(port, int):
-                port_int = port
-            elif isinstance(port, str) and port.isdigit():
-                port_int = int(port)
+        port = step.params.get("port") or step.params.get("ports")
+        port_int: int | None = None
+        if isinstance(port, int):
+            port_int = port
+        elif isinstance(port, str) and port.isdigit():
+            port_int = int(port)
 
-            decision = self.policy_gate.authorize(
-                target=step.target,
-                port=port_int,
-                tool=step.tool,
-                action_class=step.action_class,
-                assessment_id=assessment_id,
+        decision = self.policy_gate.authorize(
+            target=step.target,
+            port=port_int,
+            tool=step.tool,
+            action_class=step.action_class,
+            assessment_id=assessment_id,
+        )
+        if not decision.allowed:
+            raise PolicyDeniedError(
+                f"Step '{step.step_id}' denied by policy gate: "
+                f"{decision.reason} ({decision.rule_id})"
             )
-            if not decision.allowed:
-                raise PolicyDeniedError(
-                    f"Step '{step.step_id}' denied by policy gate: "
-                    f"{decision.reason} ({decision.rule_id})"
-                )
 
         # 3. Enforce Human Approvals Gate (AGENTS.md Rule 2)
-        if self.approval_manager is not None:
-            self.approval_manager.require(step, assessment_id=assessment_id)
+        self.approval_manager.require(step, assessment_id=assessment_id)
 
         # 4. Enforce Rate Limiting
         if self.rate_limiter is not None:
             await self.rate_limiter.throttle()
 
-        # 5. Audit Run Start (AGENTS.md Rule 7, 9)
+        # 5. DNS Pinning & safe argv substitution (ERR-03)
+        effective_argv = list(argv)
+        if decision.pinned_ip:
+            parsed = parse_target(step.target)
+            if step.tool == "nikto":
+                if "-host" in effective_argv:
+                    h_idx = effective_argv.index("-host")
+                    if h_idx + 1 < len(effective_argv):
+                        orig_host = effective_argv[h_idx + 1]
+                        effective_argv[h_idx + 1] = decision.pinned_ip
+                        if orig_host != decision.pinned_ip and "-vhost" not in effective_argv:
+                            effective_argv.extend(["-vhost", orig_host])
+            elif step.tool == "nmap":
+                for i, arg in enumerate(effective_argv):
+                    if arg == step.target or arg == parsed.host:
+                        effective_argv[i] = decision.pinned_ip
+
+        # 6. Audit Run Start (AGENTS.md Rule 7, 9)
         run_id = f"run_{step.step_id}_{uuid.uuid4().hex[:8]}"
         timeout = timeout_seconds or self.default_timeout
         self._audit(
@@ -238,16 +251,14 @@ class ToolRunner:
                 "tool": step.tool,
                 "target": redact_target(step.target),
                 "action_class": step.action_class.value,
-                "argv": redact_argv(argv),
+                "argv": redact_argv(effective_argv),
                 "timeout_seconds": timeout,
-                "ungated": self.allow_ungated and (
-                    self.policy_gate is None or self.approval_manager is None
-                ),
+                "pinned_ip": decision.pinned_ip,
             },
             assessment_id=assessment_id,
         )
 
-        # 6. Spawn Subprocess (AGENTS.md Rule 1)
+        # 7. Spawn Subprocess (AGENTS.md Rule 1)
         start_time = time.perf_counter()
         timed_out = False
         stdout_bytes = b""
@@ -257,7 +268,7 @@ class ToolRunner:
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                *argv,
+                *effective_argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd) if cwd else None,
@@ -427,6 +438,34 @@ class ToolRunner:
             argv=effective_argv,
             assessment_id=assessment_id,
             timeout_seconds=timeout_seconds,
+        )
+
+    async def run(
+        self,
+        step: PlanStep,
+        *,
+        adapter: BaseAdapter | None = None,
+        assessment_id: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> ExecutionResult:
+        """Executes a PlanStep via its adapter or direct argv parameters."""
+        if adapter is not None:
+            return await self.run_adapter(
+                adapter=adapter,
+                step=step,
+                assessment_id=assessment_id,
+                timeout_seconds=timeout_seconds,
+            )
+        argv = step.params.get("argv")
+        if argv and isinstance(argv, list):
+            return await self.execute(
+                step=step,
+                argv=argv,
+                assessment_id=assessment_id,
+                timeout_seconds=timeout_seconds,
+            )
+        raise ValueError(
+            f"Cannot run step '{step.step_id}': no adapter provided and no 'argv' parameter specified."
         )
 
     def _audit(
