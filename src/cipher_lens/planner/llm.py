@@ -10,7 +10,6 @@ Follows:
 
 import json
 import logging
-import os
 import sqlite3
 import time
 from collections.abc import Callable
@@ -20,6 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from cipher_lens.config import get_settings
 from cipher_lens.planner.cache import PromptCache
 from cipher_lens.planner.sanitize import sanitize_prompt
 from cipher_lens.planner.trace import write_llm_trace
@@ -58,27 +58,27 @@ class LlmClient:
         db_conn: sqlite3.Connection | None = None,
         raw_completion_fn: Callable[[str, str, str], str] | None = None,
     ) -> None:
-        self.provider = provider or os.environ.get("LLM_PROVIDER", "gemini").lower()
-        self.primary_key = (
-            primary_key
-            or os.environ.get("GEMINI_API_KEY_PRIMARY")
-            or os.environ.get("GEMINI_API_KEY")
-        )
-        self.primary_model = (
-            primary_model
-            or os.environ.get("GEMINI_MODEL_PRIMARY")
-            or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
-        )
-        self.secondary_key = secondary_key or os.environ.get("GEMINI_API_KEY_SECONDARY")
-        self.secondary_model = (
-            secondary_model
-            or os.environ.get("GEMINI_MODEL_SECONDARY", "gemini-2.0-flash")
-        )
+        settings = get_settings()
+        # DECISION: provider="mock" is constructor-only for unit tests.
+        # At runtime, provider defaults from Settings (which disallows "mock" in env vars).
+        if provider is not None:
+            prov = provider.lower().strip()
+            if prov not in ("gemini", "none", "offline", "mock"):
+                raise ValueError(f"Invalid provider: {provider}")
+            self.provider = prov
+        else:
+            self.provider = settings.llm_provider
 
-        env_budget = os.environ.get("LLM_CALL_BUDGET")
-        self.call_budget = call_budget or (int(env_budget) if env_budget else 30)
+        if self.provider == "mock" and raw_completion_fn is None:
+            raise ValueError("Provider is 'mock' but no raw_completion_fn was provided.")
 
-        cache_path = cache_dir or os.environ.get("LLM_CACHE_DIR")
+        self.primary_key = primary_key or settings.gemini_api_key
+        self.primary_model = primary_model or settings.gemini_model
+        self.secondary_key = secondary_key or settings.gemini_api_key_secondary
+        self.secondary_model = secondary_model or settings.gemini_model_secondary
+        self.call_budget = call_budget or settings.llm_call_budget
+
+        cache_path = cache_dir or settings.llm_cache_dir
         self.cache = PromptCache(cache_path)
         self.db_conn = db_conn
         self.raw_completion_fn = raw_completion_fn

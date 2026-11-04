@@ -132,6 +132,7 @@ def test_plan_next_steps_valid_llm_proposal(
         }"""
 
     client = LlmClient(
+        provider="mock",
         primary_key="mock-key",
         db_conn=test_db,
         raw_completion_fn=mock_backend,
@@ -180,6 +181,7 @@ def test_plan_next_steps_rejects_out_of_scope_step(
         }"""
 
     client = LlmClient(
+        provider="mock",
         primary_key="mock-key",
         db_conn=test_db,
         raw_completion_fn=mock_backend,
@@ -228,6 +230,7 @@ def test_plan_next_steps_skips_duplicate_step(
         }"""
 
     client = LlmClient(
+        provider="mock",
         primary_key="mock-key",
         db_conn=test_db,
         raw_completion_fn=mock_backend,
@@ -271,6 +274,7 @@ def test_plan_next_steps_drops_invalid_triggered_by_id(
         }"""
 
     client = LlmClient(
+        provider="mock",
         primary_key="mock-key",
         db_conn=test_db,
         raw_completion_fn=mock_backend,
@@ -352,6 +356,7 @@ def test_hostile_banner_injection_does_not_hijack_plan(
         }"""
 
     client = LlmClient(
+        provider="mock",
         primary_key="mock-key",
         db_conn=test_db,
         raw_completion_fn=mock_backend,
@@ -409,6 +414,7 @@ def test_plan_next_steps_invalid_json_falls_back_to_rules(
         return "I am an AI assistant and I don't produce valid JSON."
 
     client = LlmClient(
+        provider="mock",
         primary_key="mock-key",
         db_conn=test_db,
         raw_completion_fn=mock_broken_backend,
