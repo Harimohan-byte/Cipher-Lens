@@ -541,3 +541,168 @@ async def test_engine_authorizes_plural_ports_and_executes_step(tmp_path):
     assert "-p" in argv
     assert "3000" in argv
     assert "127.0.0.1" in argv
+
+
+@pytest.mark.asyncio
+async def test_engine_rejects_malformed_ports_fail_closed(tmp_path):
+    """Fail-closed safety: Malformed ports or out-of-scope expanded ranges are strictly rejected."""
+    db_file = tmp_path / "test_engine_fail_closed.db"
+    conn = connect(db_file)
+    init_db(conn)
+
+    repo = AssessmentRepository(conn)
+    scope = Scope(
+        id="scope-lab-ports",
+        owner="operator",
+        authorization_reference="AUTH-PRACTICE",
+        allowed_targets=["127.0.0.1"],
+        allowed_ports=[80, 443],
+        valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2026, 12, 31, tzinfo=UTC),
+    )
+    registry = ScopeRegistry()
+    registry.register(scope)
+
+    audit = AuditLog(conn=conn)
+    gate = PolicyGate(registry=registry, audit_log=audit)
+    approvals = ApprovalManager(audit_log=audit)
+    approvals.approve_plan(assessment_id="assm-fc-01", decided_by="admin", reason="ok")
+    artifacts = ArtifactStore(base_dir=tmp_path / "artifacts")
+    runner = ToolRunner(artifact_store=artifacts, audit_log=audit, policy_gate=gate, approval_manager=approvals)
+
+    from cipher_lens.adapters.nmap import NmapAdapter
+    from cipher_lens.models.assessment import Assessment, AssessmentStatus
+
+    assm = Assessment(
+        id="assm-fc-01",
+        title="Fail Closed Test",
+        target="127.0.0.1",
+        scope_id="scope-lab-ports",
+        status=AssessmentStatus.PLANNING,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    repo.create_assessment(assm)
+
+    engine = OrchestrationEngine(
+        repository=repo,
+        scope_registry=registry,
+        policy_gate=gate,
+        approval_manager=approvals,
+        artifact_store=artifacts,
+        runner=runner,
+        adapters={"nmap": NmapAdapter()},
+    )
+
+    # 1. Non-digit string "abc" fails closed
+    step_bad_str = PlanStep(
+        step_id="step_bad_1",
+        tool="nmap",
+        action_class=ActionClass.DISCOVERY,
+        target="127.0.0.1",
+        params={"ports": "abc"},
+        rationale="Bad ports",
+        expected_outcome="Reject",
+        nist_phase="discovery",
+    )
+    res1 = await engine.execute_step("assm-fc-01", step_bad_str)
+    assert res1.status == "failed"
+    assert "Policy gate rejection" in res1.stderr
+
+    # 2. Unicode digit "²" fails closed
+    step_unicode = PlanStep(
+        step_id="step_bad_2",
+        tool="nmap",
+        action_class=ActionClass.DISCOVERY,
+        target="127.0.0.1",
+        params={"ports": "²"},
+        rationale="Bad ports",
+        expected_outcome="Reject",
+        nist_phase="discovery",
+    )
+    res2 = await engine.execute_step("assm-fc-01", step_unicode)
+    assert res2.status == "failed"
+    assert "Policy gate rejection" in res2.stderr
+
+    # 3. Range "80-443" contains out-of-scope ports (e.g. 81..442), so must fail closed
+    step_range = PlanStep(
+        step_id="step_bad_3",
+        tool="nmap",
+        action_class=ActionClass.DISCOVERY,
+        target="127.0.0.1",
+        params={"ports": "80-443"},
+        rationale="Wide range",
+        expected_outcome="Reject",
+        nist_phase="discovery",
+    )
+    res3 = await engine.execute_step("assm-fc-01", step_range)
+    assert res3.status == "failed"
+    assert "Policy gate rejection" in res3.stderr
+
+
+@pytest.mark.asyncio
+async def test_engine_rejects_nikto_default_port_when_out_of_scope(tmp_path):
+    """Nikto default port 80 must be authorized; if scope allows only 3000, port 80 is rejected."""
+    db_file = tmp_path / "test_engine_nikto_port.db"
+    conn = connect(db_file)
+    init_db(conn)
+
+    repo = AssessmentRepository(conn)
+    scope = Scope(
+        id="scope-port-3000-only",
+        owner="operator",
+        authorization_reference="AUTH-PRACTICE",
+        allowed_targets=["127.0.0.1"],
+        allowed_ports=[3000],  # Port 80 is NOT allowed
+        valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2026, 12, 31, tzinfo=UTC),
+    )
+    registry = ScopeRegistry()
+    registry.register(scope)
+
+    audit = AuditLog(conn=conn)
+    gate = PolicyGate(registry=registry, audit_log=audit)
+    approvals = ApprovalManager(audit_log=audit)
+    approvals.approve_plan(assessment_id="assm-nikto-01", decided_by="admin", reason="ok")
+    artifacts = ArtifactStore(base_dir=tmp_path / "artifacts")
+    runner = ToolRunner(artifact_store=artifacts, audit_log=audit, policy_gate=gate, approval_manager=approvals)
+
+    from cipher_lens.adapters.nikto import NiktoAdapter
+    from cipher_lens.models.assessment import Assessment, AssessmentStatus
+
+    assm = Assessment(
+        id="assm-nikto-01",
+        title="Nikto Port 80 Test",
+        target="127.0.0.1",
+        scope_id="scope-port-3000-only",
+        status=AssessmentStatus.PLANNING,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    repo.create_assessment(assm)
+
+    engine = OrchestrationEngine(
+        repository=repo,
+        scope_registry=registry,
+        policy_gate=gate,
+        approval_manager=approvals,
+        artifact_store=artifacts,
+        runner=runner,
+        adapters={"nikto": NiktoAdapter()},
+    )
+
+    # Nikto step without port parameter falls back to 80, which is outside [3000]
+    step = PlanStep(
+        step_id="step-nikto-unspecified-port",
+        tool="nikto",
+        action_class=ActionClass.DISCOVERY,
+        target="127.0.0.1",
+        params={},
+        rationale="Web scan",
+        expected_outcome="Reject due to port 80 not in [3000]",
+        nist_phase="discovery",
+    )
+    res = await engine.execute_step("assm-nikto-01", step)
+    assert res.status == "failed"
+    assert "Policy gate rejection" in res.stderr
+    assert "3000" in res.stderr

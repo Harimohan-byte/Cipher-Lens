@@ -154,6 +154,14 @@ def test_ui_converse_intake_multi_turn(ui_ctrl: UIController) -> None:
     assert "thorough" in req3.depth
     assert "Clarified Parameters" in reply3
 
+    # Turn 4: Follow-up message changing depth retains target from history
+    history.append({"role": "user", "content": "Let's test 10.0.0.5 thoroughly"})
+    history.append({"role": "assistant", "content": reply3})
+    reply4, req4 = ui_ctrl.converse_intake(history, "Actually make it quick scan", scope_id="scope-ui-conv")
+    assert req4 is not None
+    assert "10.0.0.5" in req4.targets
+    assert req4.depth == "quick"
+
 
 def test_ui_plan_generation_and_approval(ui_ctrl: UIController) -> None:
     """Generating a plan creates proposed steps, and approving the plan records approval."""

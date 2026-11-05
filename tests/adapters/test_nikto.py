@@ -317,3 +317,42 @@ def test_nikto_adapter_build_argv():
     assert argv2[argv2.index("-host") + 1] == "127.0.0.1"
     assert "-port" in argv2
     assert argv2[argv2.index("-port") + 1] == "3000"
+
+
+def test_nikto_params_target_override_prevented():
+    """Security rule: params['target'] must NEVER override authorized step.target."""
+    from cipher_lens.models.plan import ActionClass, PlanStep
+
+    adapter = NiktoAdapter()
+    step = PlanStep(
+        step_id="step-nikto-bypass-test",
+        tool="nikto",
+        action_class=ActionClass.DISCOVERY,
+        target="127.0.0.1",
+        params={"target": "203.0.113.9", "port": 80},
+        rationale="Testing target isolation",
+        expected_outcome="Only authorized target scanned",
+        nist_phase="discovery",
+    )
+    argv = adapter.build_argv(step)
+    assert argv[argv.index("-host") + 1] == "127.0.0.1"
+    assert "203.0.113.9" not in argv
+
+
+def test_nikto_default_port_is_80():
+    """Port resolution default for Nikto is port 80."""
+    from cipher_lens.models.plan import ActionClass, PlanStep
+
+    adapter = NiktoAdapter()
+    step = PlanStep(
+        step_id="step-nikto-default-port",
+        tool="nikto",
+        action_class=ActionClass.DISCOVERY,
+        target="127.0.0.1",
+        params={},
+        rationale="Testing default port",
+        expected_outcome="Default port 80 is used",
+        nist_phase="discovery",
+    )
+    argv = adapter.build_argv(step)
+    assert argv[argv.index("-port") + 1] == "80"

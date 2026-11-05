@@ -167,6 +167,28 @@ def parse_nikto_xml(
     return results
 
 
+def _nikto_params_from_step(step: PlanStep) -> NiktoParams:
+    """Extracts and validates NiktoParams exclusively from step.target and step.params.
+
+    Security Invariant:
+    step.target is the sole authorized host source. params['target'] can never override it.
+    Port precedence: explicit port/ports -> target URL port -> default 80.
+    """
+    from cipher_lens.policy.gate import parse_target, resolve_step_ports
+
+    pt = parse_target(step.target)
+    ports = resolve_step_ports(step, default_port=80)
+    port = ports[0] if ports else 80
+
+    params_dict = dict(step.params)
+    # Strictly enforce step.target as the only host source
+    params_dict["target"] = pt.host
+    params_dict["port"] = port
+
+    filtered = {k: v for k, v in params_dict.items() if k in NiktoParams.model_fields}
+    return NiktoParams(**filtered)
+
+
 class NiktoAdapter(BaseAdapter):
     """Live and fixture parser adapter for Nikto web scanner."""
 
@@ -190,48 +212,12 @@ class NiktoAdapter(BaseAdapter):
 
     def build_argv(self, step: PlanStep) -> list[str]:
         """Constructs safe argv list for step execution."""
-        from cipher_lens.policy.gate import parse_target
-
-        params_dict = dict(step.params)
-        raw_target = params_dict.get("target") or step.target
-        pt = parse_target(raw_target)
-        params_dict["target"] = pt.host
-        if pt.port and "port" not in params_dict:
-            params_dict["port"] = pt.port
-        elif "ports" in params_dict and "port" not in params_dict:
-            p_val = str(params_dict["ports"]).split(",")[0].strip()
-            if p_val.isdigit():
-                params_dict["port"] = int(p_val)
-        if "port" not in params_dict:
-            params_dict["port"] = 80
-        elif isinstance(params_dict["port"], str) and params_dict["port"].strip().isdigit():
-            params_dict["port"] = int(params_dict["port"].strip())
-
-        filtered = {k: v for k, v in params_dict.items() if k in NiktoParams.model_fields}
-        params = NiktoParams(**filtered)
+        params = _nikto_params_from_step(step)
         return build_nikto_argv(params)
 
     async def run(self, step: PlanStep, ctx: ExecutionContext) -> ExecutionResult:
         """Executes Nikto safely with argv list, capturing raw output into ArtifactStore."""
-        from cipher_lens.policy.gate import parse_target
-
-        params_dict = dict(step.params)
-        raw_target = params_dict.get("target") or step.target
-        pt = parse_target(raw_target)
-        params_dict["target"] = pt.host
-        if pt.port and "port" not in params_dict:
-            params_dict["port"] = pt.port
-        elif "ports" in params_dict and "port" not in params_dict:
-            p_val = str(params_dict["ports"]).split(",")[0].strip()
-            if p_val.isdigit():
-                params_dict["port"] = int(p_val)
-        if "port" not in params_dict:
-            params_dict["port"] = 80
-        elif isinstance(params_dict["port"], str) and params_dict["port"].strip().isdigit():
-            params_dict["port"] = int(params_dict["port"].strip())
-
-        filtered = {k: v for k, v in params_dict.items() if k in NiktoParams.model_fields}
-        params = NiktoParams(**filtered)
+        params = _nikto_params_from_step(step)
 
         # Create temporary file for Nikto XML report output
         with tempfile.NamedTemporaryFile(prefix="nikto_out_", suffix=".xml", delete=False) as tmp_f:

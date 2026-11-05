@@ -265,6 +265,35 @@ def parse_nmap_xml(
     return results
 
 
+def _nmap_params_from_step(step: PlanStep) -> NmapParams:
+    """Extracts and validates NmapParams exclusively from step.target and step.params.
+
+    Security Invariant:
+    step.target is the sole authorized host source. params['target'] can never override it.
+    """
+    from cipher_lens.policy.gate import parse_target, resolve_step_ports
+
+    pt = parse_target(step.target)
+    params_dict = dict(step.params)
+    # Strictly enforce step.target as the only host source
+    params_dict["target"] = pt.host
+
+    try:
+        ports = resolve_step_ports(step)
+        if ports:
+            if "ports" in params_dict and isinstance(params_dict["ports"], str):
+                pass
+            else:
+                params_dict["ports"] = ",".join(str(p) for p in ports)
+        elif pt.port:
+            params_dict["ports"] = str(pt.port)
+    except Exception:
+        pass
+
+    filtered = {k: v for k, v in params_dict.items() if k in NmapParams.model_fields}
+    return NmapParams(**filtered)
+
+
 class NmapAdapter(BaseAdapter):
     """Live and fixture parser adapter for Nmap."""
 
@@ -288,36 +317,12 @@ class NmapAdapter(BaseAdapter):
 
     def build_argv(self, step: PlanStep) -> list[str]:
         """Constructs safe argv list for step execution."""
-        from cipher_lens.policy.gate import parse_target
-
-        params_dict = dict(step.params)
-        raw_target = params_dict.get("target") or step.target
-        pt = parse_target(raw_target)
-        params_dict["target"] = pt.host
-        if pt.port and not params_dict.get("ports") and not params_dict.get("port"):
-            params_dict["ports"] = str(pt.port)
-        if "port" in params_dict and not params_dict.get("ports"):
-            params_dict["ports"] = str(params_dict["port"])
-        filtered = {k: v for k, v in params_dict.items() if k in NmapParams.model_fields}
-        params = NmapParams(**filtered)
+        params = _nmap_params_from_step(step)
         return build_nmap_argv(params)
 
     async def run(self, step: PlanStep, ctx: ExecutionContext) -> ExecutionResult:
         """Executes Nmap safely with argv list, capturing raw output into ArtifactStore."""
-        from cipher_lens.policy.gate import parse_target
-
-        # Validate parameters
-        params_dict = dict(step.params)
-        raw_target = params_dict.get("target") or step.target
-        pt = parse_target(raw_target)
-        params_dict["target"] = pt.host
-        if pt.port and not params_dict.get("ports") and not params_dict.get("port"):
-            params_dict["ports"] = str(pt.port)
-        if "port" in params_dict and not params_dict.get("ports"):
-            params_dict["ports"] = str(params_dict["port"])
-        filtered = {k: v for k, v in params_dict.items() if k in NmapParams.model_fields}
-        params = NmapParams(**filtered)
-
+        params = _nmap_params_from_step(step)
         argv = build_nmap_argv(params, rate_limit=ctx.rate_limit)
 
         start_time = time.perf_counter()

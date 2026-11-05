@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import idna
 
-from cipher_lens.models.plan import ActionClass
+from cipher_lens.models.plan import ActionClass, PlanStep
 from cipher_lens.policy.scope import (
     HARD_DENY_NETWORKS,
     PROHIBITED_METADATA_HOSTS,
@@ -123,6 +123,108 @@ def parse_target(raw_target: str) -> ParsedTarget:
             raise ValueError(f"Invalid domain name or IDN encoding failed for '{host}': {exc}") from exc
 
     return ParsedTarget(raw=raw_target, host=host, port=port, is_ip=is_ip)
+
+
+def resolve_step_ports(
+    step: PlanStep,
+    default_port: int | None = None,
+) -> list[int]:
+    """Resolves and validates all target ports for a PlanStep.
+
+    Invariants:
+    1. Fail closed: Any unparseable, out-of-range (1-65535), or malformed port specification raises ValueError.
+    2. Strict ASCII validation: Uses isdecimal() and isascii() to block unicode digit attacks (e.g. '²').
+    3. Full range expansion: Port ranges 'lo-hi' expand all intermediate ports with a safety cap (max 1024 ports).
+    4. Target URL port extraction: If step.target contains an explicit port (e.g. http://host:3000), it is included.
+    5. Default port inclusion: If no ports are specified anywhere and default_port is given, default_port is returned so it gets policy-checked.
+    """
+    ports: list[int] = []
+
+    # 1. Check singular "port" parameter
+    raw_port = step.params.get("port")
+    if raw_port is not None:
+        if isinstance(raw_port, int) and not isinstance(raw_port, bool):
+            if not (1 <= raw_port <= 65535):
+                raise ValueError(f"Port {raw_port} out of valid range (1-65535)")
+            ports.append(raw_port)
+        elif isinstance(raw_port, str):
+            p_str = raw_port.strip()
+            if not (p_str.isascii() and p_str.isdecimal()):
+                raise ValueError(f"Invalid non-decimal port specification: '{raw_port}'")
+            val = int(p_str)
+            if not (1 <= val <= 65535):
+                raise ValueError(f"Port {val} out of valid range (1-65535)")
+            ports.append(val)
+        else:
+            raise ValueError(f"Invalid port type '{type(raw_port).__name__}': expected int or str")
+
+    # 2. Check plural "ports" parameter
+    raw_ports = step.params.get("ports")
+    if raw_ports is not None:
+        if isinstance(raw_ports, int) and not isinstance(raw_ports, bool):
+            if not (1 <= raw_ports <= 65535):
+                raise ValueError(f"Port {raw_ports} out of valid range (1-65535)")
+            ports.append(raw_ports)
+        elif isinstance(raw_ports, str):
+            for part in raw_ports.split(","):
+                p_clean = part.strip()
+                if not p_clean:
+                    continue
+                if "-" in p_clean:
+                    lo_s, _, hi_s = p_clean.partition("-")
+                    lo_clean = lo_s.strip()
+                    hi_clean = hi_s.strip()
+                    if not (lo_clean.isascii() and lo_clean.isdecimal() and hi_clean.isascii() and hi_clean.isdecimal()):
+                        raise ValueError(f"Invalid non-decimal port range: '{p_clean}'")
+                    lo, hi = int(lo_clean), int(hi_clean)
+                    if not (1 <= lo <= hi <= 65535):
+                        raise ValueError(f"Port range '{p_clean}' out of valid range (1-65535)")
+                    if hi - lo > 1024:
+                        raise ValueError(f"Port range '{p_clean}' exceeds maximum allowed span of 1024 ports")
+                    ports.extend(range(lo, hi + 1))
+                else:
+                    if not (p_clean.isascii() and p_clean.isdecimal()):
+                        raise ValueError(f"Invalid non-decimal port: '{p_clean}'")
+                    val = int(p_clean)
+                    if not (1 <= val <= 65535):
+                        raise ValueError(f"Port {val} out of valid range (1-65535)")
+                    ports.append(val)
+        elif isinstance(raw_ports, list):
+            for item in raw_ports:
+                if isinstance(item, int) and not isinstance(item, bool):
+                    if not (1 <= item <= 65535):
+                        raise ValueError(f"Port {item} out of valid range (1-65535)")
+                    ports.append(item)
+                elif isinstance(item, str):
+                    i_clean = item.strip()
+                    if not (i_clean.isascii() and i_clean.isdecimal()):
+                        raise ValueError(f"Invalid non-decimal port in list: '{item}'")
+                    val = int(i_clean)
+                    if not (1 <= val <= 65535):
+                        raise ValueError(f"Port {val} out of valid range (1-65535)")
+                    ports.append(val)
+                else:
+                    raise ValueError(f"Invalid port item in list: {item}")
+        else:
+            raise ValueError(f"Invalid ports parameter type '{type(raw_ports).__name__}'")
+
+    # 3. Check target URL port if no parameter ports found
+    if not ports and ":" in step.target:
+        try:
+            pt = parse_target(step.target)
+            if pt.port is not None:
+                ports.append(pt.port)
+        except Exception as exc:
+            raise ValueError(f"Failed to parse target URL for port: {exc}") from exc
+
+    # 4. Default port fallback if still no ports found
+    if not ports and default_port is not None:
+        if not (1 <= default_port <= 65535):
+            raise ValueError(f"Default port {default_port} out of valid range")
+        ports.append(default_port)
+
+    # Return deduplicated sorted ports
+    return sorted(set(ports))
 
 
 def _is_ip(candidate: str) -> bool:

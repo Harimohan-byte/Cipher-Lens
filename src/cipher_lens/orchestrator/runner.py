@@ -21,7 +21,7 @@ from cipher_lens.adapters.base import (
 )
 from cipher_lens.models.plan import PlanStep
 from cipher_lens.policy.approvals import ApprovalManager
-from cipher_lens.policy.gate import PolicyGate, parse_target, redact_target
+from cipher_lens.policy.gate import PolicyGate, parse_target, redact_target, resolve_step_ports
 from cipher_lens.store.artifacts import ArtifactStore
 from cipher_lens.store.audit import AuditLog
 
@@ -195,34 +195,42 @@ class ToolRunner:
                 )
 
         # 2. Enforce Policy Gate (AGENTS.md Rule 2)
-        port = step.params.get("port") or step.params.get("ports")
-        port_int: int | None = None
-        if isinstance(port, int):
-            port_int = port
-        elif isinstance(port, str):
-            p_val = port.split(",")[0].strip()
-            if p_val.isdigit():
-                port_int = int(p_val)
-        if port_int is None and ":" in step.target:
-            try:
-                pt = parse_target(step.target)
-                if pt.port:
-                    port_int = pt.port
-            except Exception:
-                pass
-
-        decision = self.policy_gate.authorize(
-            target=step.target,
-            port=port_int,
-            tool=step.tool,
-            action_class=step.action_class,
-            assessment_id=assessment_id,
-        )
-        if not decision.allowed:
+        default_port = 80 if step.tool == "nikto" else None
+        try:
+            ports_to_check = resolve_step_ports(step, default_port=default_port)
+        except ValueError as exc:
             raise PolicyDeniedError(
-                f"Step '{step.step_id}' denied by policy gate: "
-                f"{decision.reason} ({decision.rule_id})"
+                f"Step '{step.step_id}' denied by policy gate: invalid port specification ({exc})"
+            ) from exc
+
+        decision = None
+        if ports_to_check:
+            for p in ports_to_check:
+                decision = self.policy_gate.authorize(
+                    target=step.target,
+                    port=p,
+                    tool=step.tool,
+                    action_class=step.action_class,
+                    assessment_id=assessment_id,
+                )
+                if not decision.allowed:
+                    raise PolicyDeniedError(
+                        f"Step '{step.step_id}' denied by policy gate for port {p}: "
+                        f"{decision.reason} ({decision.rule_id})"
+                    )
+        else:
+            decision = self.policy_gate.authorize(
+                target=step.target,
+                port=None,
+                tool=step.tool,
+                action_class=step.action_class,
+                assessment_id=assessment_id,
             )
+            if not decision.allowed:
+                raise PolicyDeniedError(
+                    f"Step '{step.step_id}' denied by policy gate: "
+                    f"{decision.reason} ({decision.rule_id})"
+                )
 
         # 3. Enforce Human Approvals Gate (AGENTS.md Rule 2)
         self.approval_manager.require(step, assessment_id=assessment_id)
@@ -435,46 +443,110 @@ class ToolRunner:
             if hasattr(adapter, "run"):
                 from cipher_lens.adapters.base import ExecutionContext
 
-                port = step.params.get("port") or step.params.get("ports")
-                port_int: int | None = None
-                if isinstance(port, int):
-                    port_int = port
-                elif isinstance(port, str):
-                    p_val = port.split(",")[0].strip()
-                    if p_val.isdigit():
-                        port_int = int(p_val)
-                if port_int is None and ":" in step.target:
-                    try:
-                        pt = parse_target(step.target)
-                        if pt.port:
-                            port_int = pt.port
-                    except Exception:
-                        pass
-
-                decision = self.policy_gate.authorize(
-                    target=step.target,
-                    port=port_int,
-                    tool=step.tool,
-                    action_class=step.action_class,
-                    assessment_id=assessment_id,
-                )
-                if not decision.allowed:
+                default_port = 80 if step.tool == "nikto" else None
+                try:
+                    ports_to_check = resolve_step_ports(step, default_port=default_port)
+                except ValueError as exc:
                     raise PolicyDeniedError(
-                        f"Step '{step.step_id}' denied by policy gate: "
-                        f"{decision.reason} ({decision.rule_id})"
+                        f"Step '{step.step_id}' denied by policy gate: invalid port specification ({exc})"
+                    ) from exc
+
+                decision = None
+                if ports_to_check:
+                    for p in ports_to_check:
+                        decision = self.policy_gate.authorize(
+                            target=step.target,
+                            port=p,
+                            tool=step.tool,
+                            action_class=step.action_class,
+                            assessment_id=assessment_id,
+                        )
+                        if not decision.allowed:
+                            raise PolicyDeniedError(
+                                f"Step '{step.step_id}' denied by policy gate for port {p}: "
+                                f"{decision.reason} ({decision.rule_id})"
+                            )
+                else:
+                    decision = self.policy_gate.authorize(
+                        target=step.target,
+                        port=None,
+                        tool=step.tool,
+                        action_class=step.action_class,
+                        assessment_id=assessment_id,
                     )
+                    if not decision.allowed:
+                        raise PolicyDeniedError(
+                            f"Step '{step.step_id}' denied by policy gate: "
+                            f"{decision.reason} ({decision.rule_id})"
+                        )
 
                 self.approval_manager.require(step, assessment_id=assessment_id)
 
                 if self.rate_limiter is not None:
                     await self.rate_limiter.throttle()
 
+                run_id = f"run_{step.step_id}_{uuid.uuid4().hex[:8]}"
+                timeout = timeout_seconds or self.default_timeout
+
+                # Audit run start (AGENTS.md Rule 7, 9)
+                self._audit(
+                    actor="runner",
+                    event_type="tool_run_started",
+                    payload={
+                        "run_id": run_id,
+                        "step_id": step.step_id,
+                        "tool": step.tool,
+                        "target": redact_target(step.target),
+                        "action_class": step.action_class.value,
+                        "argv": [],
+                        "timeout_seconds": timeout,
+                        "pinned_ip": decision.pinned_ip if decision else None,
+                    },
+                    assessment_id=assessment_id,
+                )
+
                 ctx = ExecutionContext(
                     artifact_store=self.artifact_store,
-                    timeout_seconds=timeout_seconds or self.default_timeout,
+                    timeout_seconds=int(timeout),
                     rate_limit=self.rate_limiter.rate_limit if self.rate_limiter else None,
+                    pinned_ip=decision.pinned_ip if decision else None,
                 )
-                return await adapter.run(step, ctx)
+
+                start_time = time.perf_counter()
+                try:
+                    result = await adapter.run(step, ctx)
+                    duration = time.perf_counter() - start_time
+                    event_type = "tool_run_completed" if result.status == "succeeded" else "tool_run_failed"
+                    self._audit(
+                        actor="runner",
+                        event_type=event_type,
+                        payload={
+                            "run_id": run_id,
+                            "step_id": step.step_id,
+                            "tool": step.tool,
+                            "status": result.status,
+                            "exit_code": result.exit_code,
+                            "duration_seconds": round(duration, 3),
+                            "artifact_id": result.artifact_id,
+                        },
+                        assessment_id=assessment_id,
+                    )
+                    return result
+                except Exception as exc:
+                    duration = time.perf_counter() - start_time
+                    self._audit(
+                        actor="runner",
+                        event_type="tool_run_failed",
+                        payload={
+                            "run_id": run_id,
+                            "step_id": step.step_id,
+                            "tool": step.tool,
+                            "error": str(exc),
+                            "duration_seconds": round(duration, 3),
+                        },
+                        assessment_id=assessment_id,
+                    )
+                    raise
 
             raise ValueError(
                 f"Adapter '{adapter.name}' does not implement build_argv(step)"

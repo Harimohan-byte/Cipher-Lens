@@ -8,6 +8,7 @@ Invariants:
 
 import asyncio
 import concurrent.futures
+import hashlib
 import re
 import uuid
 from datetime import UTC, datetime
@@ -23,7 +24,7 @@ from cipher_lens.adapters.zap import ZapAdapter
 from cipher_lens.correlate.risk import RiskScorer
 from cipher_lens.enrichment.service import EnrichmentService
 from cipher_lens.models.assessment import Assessment, AssessmentStatus
-from cipher_lens.models.findings import Finding
+from cipher_lens.models.findings import Evidence, Finding
 from cipher_lens.models.observations import Observation
 from cipher_lens.models.plan import ActionClass, PlanStep
 from cipher_lens.orchestrator.chaos import ChaosConfig, ChaosManager
@@ -204,8 +205,18 @@ class UIController:
         scope = self.get_scope(scope_id) if scope_id else None
         allowed_str = ", ".join(scope.allowed_targets) if scope else "Any authorized lab target"
 
+        combined_text = new_message
+        if history:
+            prior_dialogue = [
+                f"{m.get('role', 'user')}: {m.get('content', '')}"
+                for m in history
+                if m.get("content")
+            ]
+            if prior_dialogue:
+                combined_text = "\n".join(prior_dialogue + [f"user: {new_message}"])
+
         req, refused = parse_intake(
-            user_request=new_message,
+            user_request=combined_text,
             llm_client=self.llm_client,
             gate=self.policy_gate,
             assessment_id=assessment_id,
@@ -263,6 +274,32 @@ class UIController:
         obs_list: list[Observation] = []
         if hasattr(self, "_active_observations"):
             obs_list.extend(self._active_observations.get(assessment_id, []))
+
+        # Reconstruct observations from completed discovery runs if memory cache is empty
+        if not obs_list:
+            runs = self.repository.list_runs(assessment_id)
+            for run in runs:
+                if run.stdout_artifact_id and run.tool_name in self.engine.adapters:
+                    adapter = self.engine.adapters[run.tool_name]
+                    try:
+                        raw_bytes = self.artifact_store.read_raw(run.stdout_artifact_id)
+                        ev_meta = Evidence(
+                            id=f"ev_reconstruct_{uuid.uuid4().hex[:8]}",
+                            source_tool=run.tool_name,
+                            run_id=run.run_id,
+                            artifact_id=run.stdout_artifact_id,
+                            locator=f"/{run.tool_name}/output",
+                            raw_sha256=run.raw_sha256 or hashlib.sha256(raw_bytes).hexdigest(),
+                            snippet="",
+                            observed_at=datetime.now(UTC),
+                            origin="live",
+                        )
+                        for item in adapter.parse(raw_bytes, ev_meta):
+                            if isinstance(item, Observation):
+                                obs_list.append(item)
+                                self.record_observation(assessment_id, item)
+                    except Exception:
+                        pass
         for f in findings:
             obs_list.append(
                 Observation(
@@ -568,6 +605,26 @@ class UIController:
         findings: list[Finding] = []
         if exec_result.status == "succeeded":
             findings = _run_coroutine_sync(self.engine.ingest_artifact(assessment_id, step, exec_result))
+            if exec_result.artifact_id and step.tool in self.engine.adapters:
+                adapter = self.engine.adapters[step.tool]
+                try:
+                    raw_bytes = self.artifact_store.read_raw(exec_result.artifact_id)
+                    ev_meta = Evidence(
+                        id=f"ev_obs_{uuid.uuid4().hex[:8]}",
+                        source_tool=step.tool,
+                        run_id=f"run_{step.step_id}",
+                        artifact_id=exec_result.artifact_id,
+                        locator=f"/{step.tool}/output",
+                        raw_sha256=hashlib.sha256(raw_bytes).hexdigest(),
+                        snippet="",
+                        observed_at=datetime.now(UTC),
+                        origin="live",
+                    )
+                    for item in adapter.parse(raw_bytes, ev_meta):
+                        if isinstance(item, Observation):
+                            self.record_observation(assessment_id, item)
+                except Exception:
+                    pass
             self.repository.update_step_status(assessment_id, step_id, "completed")
         else:
             self.repository.update_step_status(assessment_id, step_id, "failed")

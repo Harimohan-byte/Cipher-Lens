@@ -94,6 +94,7 @@ class ExecutionContext(BaseModel):
     artifact_store: ArtifactStore
     rate_limit: int | None = None
     timeout_seconds: int = 300
+    pinned_ip: str | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 

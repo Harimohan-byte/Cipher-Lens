@@ -23,11 +23,12 @@ from cipher_lens.correlate.normalize import normalize_finding
 from cipher_lens.correlate.risk import RiskScorer
 from cipher_lens.enrichment.service import EnrichmentService
 from cipher_lens.models.findings import Evidence, Finding, RawFinding
+from cipher_lens.models.observations import Observation
 from cipher_lens.models.plan import PlanStep
 from cipher_lens.orchestrator.events import AssessmentEvent, EventBus
 from cipher_lens.orchestrator.runner import RateLimiter, ToolRunner
 from cipher_lens.policy.approvals import ApprovalError, ApprovalManager
-from cipher_lens.policy.gate import PolicyGate
+from cipher_lens.policy.gate import PolicyGate, resolve_step_ports
 from cipher_lens.policy.scope import ScopeRegistry
 from cipher_lens.store.artifacts import ArtifactStore
 from cipher_lens.store.repository import AssessmentRepository
@@ -110,30 +111,23 @@ class OrchestrationEngine:
             return await asyncio.shield(self._inflight_tasks[idem_key])
 
         # 2. Check policy gate authorization
-        ports_to_check: list[int] = []
-        raw_port = step.params.get("port")
-        if raw_port is not None and str(raw_port).strip().isdigit():
-            ports_to_check.append(int(raw_port))
-
-        raw_ports = step.params.get("ports")
-        if raw_ports and isinstance(raw_ports, str):
-            for p_str in raw_ports.split(","):
-                p_clean = p_str.strip()
-                if p_clean.isdigit():
-                    ports_to_check.append(int(p_clean))
-                elif "-" in p_clean:
-                    parts = p_clean.split("-", 1)
-                    if parts[0].strip().isdigit() and parts[1].strip().isdigit():
-                        ports_to_check.extend([int(parts[0].strip()), int(parts[1].strip())])
-
-        if not ports_to_check and ":" in step.target:
-            try:
-                from cipher_lens.policy.gate import parse_target
-                pt = parse_target(step.target)
-                if pt.port:
-                    ports_to_check.append(pt.port)
-            except Exception:
-                pass
+        default_port = 80 if step.tool == "nikto" else None
+        try:
+            ports_to_check = resolve_step_ports(step, default_port=default_port)
+        except ValueError as exc:
+            err_msg = f"Invalid port specification: {exc}"
+            self._emit(
+                assessment_id,
+                "step_rejected_by_policy",
+                {"step_id": step_id, "reason": err_msg},
+            )
+            return ExecutionResult(
+                status="failed",
+                stdout="",
+                stderr=f"Policy gate rejection: {err_msg}",
+                exit_code=1,
+                duration_seconds=0.0,
+            )
 
         if ports_to_check:
             for port in ports_to_check:
@@ -274,6 +268,24 @@ class OrchestrationEngine:
 
         parsed_items = adapter.parse(raw_bytes, ev_meta)
         raw_findings = [p for p in parsed_items if isinstance(p, RawFinding)]
+        observations = [p for p in parsed_items if isinstance(p, Observation)]
+
+        for obs in observations:
+            if obs.raw_evidence:
+                try:
+                    self.repo.save_evidence(assessment_id, obs.raw_evidence)
+                except Exception:
+                    pass
+            self._emit(
+                assessment_id,
+                "observation_ingested",
+                {
+                    "observation_id": obs.id,
+                    "type": obs.observation_type,
+                    "data": obs.data,
+                    "asset": obs.asset.model_dump(mode="json"),
+                },
+            )
 
         if not raw_findings:
             return []

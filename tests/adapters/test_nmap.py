@@ -152,3 +152,21 @@ def test_nmap_adapter_run_mocked(tmp_path, monkeypatch):
     # Verify saved artifact contains our sample XML
     raw_content = store.read_raw(result.artifact_id)
     assert b"10.0.0.5" in raw_content
+
+
+def test_nmap_params_target_override_prevented():
+    """Security rule: params['target'] must NEVER override authorized step.target."""
+    adapter = NmapAdapter()
+    step = PlanStep(
+        step_id="step-scope-bypass-test",
+        tool="nmap",
+        action_class=ActionClass.DISCOVERY,
+        target="127.0.0.1",
+        params={"target": "203.0.113.9", "ports": "80"},
+        rationale="Testing target isolation",
+        expected_outcome="Only authorized target scanned",
+        nist_phase="discovery",
+    )
+    argv = adapter.build_argv(step)
+    assert "127.0.0.1" in argv
+    assert "203.0.113.9" not in argv

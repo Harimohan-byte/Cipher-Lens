@@ -574,3 +574,9 @@ async def test_run_adapter_delegates_to_run_if_no_build_argv(tmp_path: Path):
     assert result.status == "succeeded"
     assert result.stdout == "DIRECT RUN EXECUTED"
 
+    # Invariant: Must write hash-chained audit events
+    events = [e.event_type for e in runner.audit_log.query(assessment_id="assess-runner")]
+    assert "tool_run_started" in events
+    assert "tool_run_completed" in events
+    assert runner.audit_log.verify_chain().ok is True
+
