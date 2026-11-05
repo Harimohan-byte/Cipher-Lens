@@ -383,9 +383,13 @@ class LlmClient:
             elif self.secondary_model and self.secondary_model != self.primary_model:
                 attempts_plan.append((self.primary_key, self.secondary_model, "primary_secondary_model"))
 
+            # If gemini-3.5-flash is not yet in attempts_plan, add it as high-availability capacity failover
+            if "gemini-3.5-flash" not in [m for _, m, _ in attempts_plan]:
+                attempts_plan.append((self.primary_key, "gemini-3.5-flash", "high_availability_fallback"))
+
             last_exc: Exception | None = None
             for current_key, current_model, key_label in attempts_plan:
-                max_retries = 2
+                max_retries = 1
                 delay = 1.0
 
                 for attempt in range(max_retries + 1):
