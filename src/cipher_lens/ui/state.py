@@ -271,9 +271,13 @@ class UIController:
                 )
             )
 
+        scope = self.get_scope(assm.scope_id) if assm.scope_id else None
+        allowed_ports = scope.allowed_ports if scope and scope.allowed_ports else []
+
         state = StateSummary(
             scope_target=assm.target,
             allowed_tools=["nmap", "nikto", "zap"],
+            allowed_ports=allowed_ports,
             observations=obs_list,
             findings=findings,
             done_steps=done_steps,

@@ -140,6 +140,7 @@ class StateSummary(BaseModel):
 
     scope_target: str
     allowed_tools: list[str] = Field(default_factory=list)
+    allowed_ports: list[int] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
     done_steps: list[str] = Field(default_factory=list)

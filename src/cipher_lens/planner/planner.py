@@ -196,9 +196,11 @@ class AdaptivePlanner:
 
         obs_block = "\n".join(obs_lines) if obs_lines else "None yet."
 
+        ports_line = f"ALLOWED_PORTS: {state.allowed_ports}\n" if state.allowed_ports else ""
         return (
             f"SCOPE_TARGET: {state.scope_target}\n"
             f"ALLOWED_TOOLS: {state.allowed_tools}\n"
+            f"{ports_line}"
             f"EVIDENCE_IDS: {state.evidence_ids}\n"
             f"DONE_STEPS: {state.done_steps}\n"
             f"FAILURES: {state.failures}\n"
@@ -228,11 +230,26 @@ class AdaptivePlanner:
         ports_to_check: list[int] = []
         if "port" in step.params and str(step.params["port"]).isdigit():
             ports_to_check.append(int(step.params["port"]))
-        elif "ports" in step.params:
+        elif "ports" in step.params and step.params["ports"]:
             for p_str in str(step.params["ports"]).split(","):
                 p_clean = p_str.strip()
                 if p_clean.isdigit():
                     ports_to_check.append(int(p_clean))
+                elif "-" in p_clean:
+                    parts = p_clean.split("-", 1)
+                    if parts[0].strip().isdigit() and parts[1].strip().isdigit():
+                        ports_to_check.extend([int(parts[0].strip()), int(parts[1].strip())])
+
+        # Clamping broad port discovery to registered scope allowed_ports (if any)
+        if hasattr(self.gate, "registry") and self.gate.registry is not None:
+            all_scopes = self.gate.registry.list_all()
+            if all_scopes and all_scopes[0].allowed_ports:
+                allowed_set = set(all_scopes[0].allowed_ports)
+                if step.tool == "nmap":
+                    if not ports_to_check or not set(ports_to_check).issubset(allowed_set):
+                        clamped = sorted(allowed_set)
+                        step.params.ports = ",".join(str(p) for p in clamped)
+                        ports_to_check = clamped
 
         if ports_to_check:
             for port in ports_to_check:
