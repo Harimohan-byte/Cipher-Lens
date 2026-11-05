@@ -488,6 +488,21 @@ def render_execution_page(ctrl: UIController) -> None:
     if not steps:
         st.caption("No steps generated yet for this assessment.")
     else:
+        col_e1, col_e2 = st.columns([3, 1])
+        with col_e1:
+            st.write("Execute approved steps against authorized target(s) using subprocess runners (Nmap, Nikto, ZAP).")
+        with col_e2:
+            exec_all_btn = st.button("Execute Approved Steps 🚀", key="exec_all_steps_btn", type="primary", disabled=(role == "auditor"))
+
+        if exec_all_btn:
+            with st.spinner("Executing live scanner steps and ingesting findings..."):
+                try:
+                    new_findings = ctrl.execute_all_steps(active_id)
+                    st.success(f"Execution cycle complete! Ingested {len(new_findings)} findings.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Execution error: {exc}")
+
         for s, status in steps:
             with st.expander(f"Step `{s.step_id}`: {s.tool} on {s.target} [{status.upper()}]"):
                 st.write(f"**Status:** `{status.upper()}` | **Action Class:** `{s.action_class.value.upper()}`")
@@ -495,6 +510,18 @@ def render_execution_page(ctrl: UIController) -> None:
                 st.write(f"**Expected Outcome:** {s.expected_outcome}")
                 st.write(f"**Triggered By:** `{s.triggered_by}`")
                 st.write(f"**Idempotency Key:** `{s.idempotency_key}`")
+                if status != "completed" and role != "auditor":
+                    if st.button(f"Execute Step `{s.step_id}` ⚡", key=f"exec_btn_{s.step_id}"):
+                        with st.spinner(f"Running {s.tool} on {s.target}..."):
+                            try:
+                                res, f_list = ctrl.execute_step(active_id, s.step_id)
+                                if res.status == "succeeded":
+                                    st.success(f"Step {s.step_id} completed successfully! ({res.duration_seconds}s)")
+                                else:
+                                    st.warning(f"Step status: {res.status}. Output: {res.stderr or res.stdout}")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Step execution failed: {exc}")
 
     # Offline Replay Mode (Task A14)
     st.markdown("---")

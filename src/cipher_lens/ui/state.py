@@ -6,6 +6,8 @@ Invariants:
 - AGENTS.md Rule 7: Every state change writes a hash-chained audit event.
 """
 
+import asyncio
+import concurrent.futures
 import re
 import uuid
 from datetime import UTC, datetime
@@ -19,11 +21,14 @@ from cipher_lens.adapters.nikto import NiktoAdapter
 from cipher_lens.adapters.nmap import NmapAdapter
 from cipher_lens.adapters.zap import ZapAdapter
 from cipher_lens.correlate.risk import RiskScorer
+from cipher_lens.enrichment.service import EnrichmentService
 from cipher_lens.models.assessment import Assessment, AssessmentStatus
 from cipher_lens.models.findings import Finding
 from cipher_lens.models.plan import ActionClass, PlanStep
 from cipher_lens.orchestrator.chaos import ChaosConfig, ChaosManager
+from cipher_lens.orchestrator.engine import OrchestrationEngine
 from cipher_lens.orchestrator.replay import ReplayRunner
+from cipher_lens.orchestrator.runner import ToolRunner
 from cipher_lens.planner.intake import parse_intake
 from cipher_lens.planner.llm import LlmClient
 from cipher_lens.planner.models import AssessmentRequest, PlanProposal, StateSummary
@@ -40,6 +45,19 @@ from cipher_lens.store.artifacts import ArtifactStore
 from cipher_lens.store.audit import AuditEvent, AuditLog, ChainVerification
 from cipher_lens.store.db import connect, init_db
 from cipher_lens.store.repository import AssessmentRepository
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    """Safely runs an async coroutine synchronously from Streamlit or synchronous worker threads."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
 
 
 class UIController:
@@ -77,11 +95,30 @@ class UIController:
             "openvas_import": OpenvasImporter(),
         }
         self.chaos_manager = ChaosManager()
+        self.risk_scorer = RiskScorer()
+        self.runner = ToolRunner(
+            artifact_store=self.artifact_store,
+            audit_log=self.audit_log,
+            policy_gate=self.policy_gate,
+            approval_manager=self.approval_manager,
+        )
+        self.enrichment_service = EnrichmentService()
+        self.engine = OrchestrationEngine(
+            repository=self.repository,
+            scope_registry=self.scope_registry,
+            policy_gate=self.policy_gate,
+            approval_manager=self.approval_manager,
+            artifact_store=self.artifact_store,
+            runner=self.runner,
+            adapters=self.adapters,
+            enrichment_service=self.enrichment_service,
+            risk_scorer=self.risk_scorer,
+        )
         self.replay_runner = ReplayRunner(
             repository=self.repository,
             artifact_store=self.artifact_store,
             adapters=self.adapters,
-            risk_scorer=RiskScorer(),
+            risk_scorer=self.risk_scorer,
             audit_log=self.audit_log,
         )
 
@@ -422,6 +459,42 @@ class UIController:
         )
         self.repository.save_finding(assessment_id, updated)
         return updated
+
+    def execute_step(
+        self,
+        assessment_id: str,
+        step_id: str,
+    ) -> tuple[Any, list[Finding]]:
+        """Executes a single planned step live via OrchestrationEngine and ingests artifacts."""
+        step_tuple = self.repository.get_step(assessment_id, step_id)
+        if step_tuple is None:
+            raise ValueError(f"Step '{step_id}' not found in assessment '{assessment_id}'")
+        step, _ = step_tuple
+
+        self.repository.update_step_status(assessment_id, step_id, "running")
+
+        exec_result = _run_coroutine_sync(self.engine.execute_step(assessment_id, step))
+        findings: list[Finding] = []
+        if exec_result.status == "succeeded":
+            findings = _run_coroutine_sync(self.engine.ingest_artifact(assessment_id, step, exec_result))
+            self.repository.update_step_status(assessment_id, step_id, "completed")
+        else:
+            self.repository.update_step_status(assessment_id, step_id, "failed")
+
+        return exec_result, findings
+
+    def execute_all_steps(
+        self,
+        assessment_id: str,
+    ) -> list[Finding]:
+        """Executes all pending or runnable steps for an assessment sequentially."""
+        steps = self.repository.get_steps(assessment_id)
+        all_findings: list[Finding] = []
+        for s, status in steps:
+            if status in ("pending", "failed"):
+                _, step_findings = self.execute_step(assessment_id, s.step_id)
+                all_findings.extend(step_findings)
+        return all_findings
 
     def replay_fixtures(
         self,
