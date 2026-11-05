@@ -227,7 +227,7 @@ class UIController:
                 tool=step.tool,  # type: ignore[arg-type]
                 action_class=step.action_class,
                 target=step.target,
-                params=step.params,
+                params=step.params.model_dump() if hasattr(step.params, "model_dump") else (step.params or {}),
                 rationale=step.rationale,
                 triggered_by=step.triggered_by,
                 expected_outcome=step.expected_outcome,

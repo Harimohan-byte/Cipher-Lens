@@ -8,11 +8,52 @@ Invariants:
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cipher_lens.models.findings import Finding
 from cipher_lens.models.observations import Observation
 from cipher_lens.models.plan import ActionClass
+
+
+class StepParams(BaseModel):
+    """Structured step parameters compliant with Gemini Developer API JSON schema constraints.
+
+    Eliminates unconstrained dictionary schemas to ensure full compatibility with the
+    Google Gemini Developer API.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    target: str = ""
+    port: int | None = None
+    ports: str = ""
+    profile: str = "discovery"
+    mode: str = "passive"
+    ssl: bool = False
+    scripts: list[str] = Field(default_factory=list)
+    argv: list[str] = Field(default_factory=list)
+    pinned_ip: str | None = None
+    context_name: str | None = None
+    exclusions: list[str] = Field(default_factory=list)
+    max_poll_seconds: float = 300.0
+    poll_interval_seconds: float = 2.0
+    active_scan: bool = False
+    active: bool = False
+
+    def get(self, key: str, default: Any = None) -> Any:
+        val = getattr(self, key, default)
+        return default if val is None else val
+
+    def items(self) -> Any:
+        return self.model_dump().items()
+
+    def __getitem__(self, key: str) -> Any:
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def __contains__(self, key: object) -> bool:
+        return hasattr(self, str(key))
 
 
 class AssessmentRequest(BaseModel):
@@ -32,13 +73,22 @@ class ProposedStep(BaseModel):
     step_id: str
     tool: str
     target: str = ""
-    params: dict[str, Any] = Field(default_factory=dict)
+    params: StepParams = Field(default_factory=StepParams)
     rationale: str = "Reconnaissance and vulnerability assessment action"
     triggered_by: list[str] = Field(default_factory=list)
     expected_outcome: str = "Discover open services and potential vulnerabilities"
     nist_phase: str = "discovery"
     action_class: ActionClass = ActionClass.DISCOVERY
     idempotency_key: str | None = None
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def validate_params(cls, v: Any) -> Any:
+        if isinstance(v, dict):
+            return StepParams(**v)
+        if isinstance(v, StepParams):
+            return v
+        return StepParams()
 
 
 class InferenceProposal(BaseModel):

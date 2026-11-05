@@ -359,3 +359,61 @@ def test_genai_non_stop_finish_reason_rejected():
             system_instruction="sys",
         )
 
+
+def test_plan_proposal_schema_zero_additional_properties():
+    """Break-it test: PlanProposal schema must have zero additionalProperties to prevent Developer API errors."""
+    import json
+    from cipher_lens.planner.models import PlanProposal
+    from cipher_lens.planner.llm import _clean_schema_for_gemini
+
+    schema_str = json.dumps(PlanProposal.model_json_schema())
+    assert "additionalProperties" not in schema_str
+    assert "additional_properties" not in schema_str
+
+    # Verify _clean_schema_for_gemini also sanitizes any rogue schemas
+    dirty = {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "sub": {"type": "object", "additionalProperties": False, "properties": {"x": {"type": "string"}}}
+        },
+    }
+    cleaned = _clean_schema_for_gemini(dirty)
+    cleaned_str = json.dumps(cleaned)
+    assert "additionalProperties" not in cleaned_str
+    assert "additional_properties" not in cleaned_str
+
+
+def test_complete_json_failover_to_secondary_key(test_db_conn: sqlite3.Connection):
+    """Test that transient 503 or 429 on primary key fails over to secondary key."""
+    call_log = []
+
+    def mock_backend(prompt: str, model: str, api_key: str) -> str:
+        call_log.append((model, api_key))
+        if api_key == "primary-key":
+            raise RuntimeError("503 UNAVAILABLE: High demand spike on primary")
+        return '{"action": "port_scan", "target": "10.0.0.5", "priority": 5}'
+
+    client = LlmClient(
+        provider="mock",
+        primary_key="primary-key",
+        primary_model="gemini-3.8-flash",
+        secondary_key="secondary-key",
+        secondary_model="gemini-3.5-flash-lite",
+        db_conn=test_db_conn,
+        raw_completion_fn=mock_backend,
+    )
+
+    resp: LlmResponse[SampleActionModel] = client.complete_json(
+        system_instruction="Security planner",
+        user_prompt="Scan open ports",
+        schema=SampleActionModel,
+        fallback_factory=fallback_action,
+    )
+
+    assert resp.label == "live"
+    assert resp.model == "gemini-3.5-flash-lite"
+    assert resp.data.action == "port_scan"
+    assert any(k == "secondary-key" for _, k in call_log)
+
+

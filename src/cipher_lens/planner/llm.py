@@ -44,6 +44,41 @@ class LlmResponse[T: BaseModel]:
         return self.label
 
 
+def _clean_schema_for_gemini(schema: Any) -> Any:
+    """Sanitizes JSON schema for Gemini Developer API (non-Vertex AI).
+
+    In Gemini Developer API mode (client.vertexai=False), google.genai's client-side
+    transformer (_raise_for_unsupported_mldev_properties) raises ValueError if
+    'additionalProperties' or 'additional_properties' is present anywhere in the schema.
+    Stripping these keys allows structured JSON generation to succeed seamlessly with
+    Google AI Studio Developer API keys.
+    """
+    if schema is None:
+        return None
+
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        raw_schema = schema.model_json_schema()
+    elif isinstance(schema, BaseModel):
+        raw_schema = schema.model_json_schema()
+    elif isinstance(schema, dict):
+        raw_schema = dict(schema)
+    else:
+        return schema
+
+    def _strip_additional_props(val: Any) -> Any:
+        if isinstance(val, dict):
+            return {
+                k: _strip_additional_props(v)
+                for k, v in val.items()
+                if k not in ("additionalProperties", "additional_properties")
+            }
+        if isinstance(val, list):
+            return [_strip_additional_props(item) for item in val]
+        return val
+
+    return _strip_additional_props(raw_schema)
+
+
 class LlmClient:
     """Enterprise LLM client with dual-key failover, validation retry, and caching."""
 
@@ -178,7 +213,7 @@ class LlmClient:
         if system_instruction is not None:
             kwargs["system_instruction"] = system_instruction
         if schema is not None:
-            kwargs["response_schema"] = schema
+            kwargs["response_schema"] = _clean_schema_for_gemini(schema)
 
         config = types.GenerateContentConfig(**kwargs)
         response = client.models.generate_content(
@@ -334,54 +369,75 @@ class LlmClient:
             f"System Instructions:\n{clean_system}\n\nTask Query:\n{clean_user}"
         )
 
-        # Helper to execute with single-key exponential backoff retry (D-05, ERR-10)
+        # Helper to execute with single-key exponential backoff retry and secondary key failover
         def execute_with_retry(
             p_text: str,
             u_text: str,
             s_text: str,
         ) -> tuple[str, str, int]:
-            used_model = self.primary_model
-            max_retries = 2
-            delay = 1.0
+            attempts_plan: list[tuple[str, str, str]] = [
+                (self.primary_key, self.primary_model, "primary"),
+            ]
+            if self.secondary_key and self.secondary_key.strip() != (self.primary_key or "").strip():
+                attempts_plan.append((self.secondary_key, self.secondary_model, "secondary"))
+            elif self.secondary_model and self.secondary_model != self.primary_model:
+                attempts_plan.append((self.primary_key, self.secondary_model, "primary_secondary_model"))
 
-            for attempt in range(max_retries + 1):
-                try:
-                    self._increment_call_count()
-                    res, lat = self._execute_raw(
-                        prompt=p_text,
-                        model=used_model,
-                        api_key=self.primary_key,
-                        user_prompt=u_text,
-                        system_instruction=s_text,
-                        schema=schema,  # type: ignore[arg-type]
-                    )
-                    return res, used_model, lat
-                except Exception as exc:
-                    is_rate_limit = False
+            last_exc: Exception | None = None
+            for current_key, current_model, key_label in attempts_plan:
+                max_retries = 2
+                delay = 1.0
+
+                for attempt in range(max_retries + 1):
                     try:
-                        from google.genai import errors
-                        if isinstance(exc, errors.APIError) and exc.code == 429:
-                            is_rate_limit = True
-                    except ImportError:
-                        pass
-
-                    if not is_rate_limit:
-                        err_str = str(exc)
-                        if "429" in err_str or "ResourceExhausted" in err_str or "quota" in err_str.lower():
-                            is_rate_limit = True
-
-                    if is_rate_limit and attempt < max_retries:
-                        logger.warning(
-                            "Gemini rate limit encountered (HTTP 429). Retrying in %.1fs (attempt %d/%d)...",
-                            delay,
-                            attempt + 1,
-                            max_retries,
+                        self._increment_call_count()
+                        res, lat = self._execute_raw(
+                            prompt=p_text,
+                            model=current_model,
+                            api_key=current_key,
+                            user_prompt=u_text,
+                            system_instruction=s_text,
+                            schema=schema,  # type: ignore[arg-type]
                         )
-                        time.sleep(delay)
-                        delay *= 2.0
-                        continue
-                    raise
-            raise RuntimeError("Exhausted retries in execute_with_retry")
+                        return res, current_model, lat
+                    except Exception as exc:
+                        last_exc = exc
+                        is_transient = False
+                        try:
+                            from google.genai import errors
+                            if isinstance(exc, errors.APIError) and exc.code in (429, 500, 503):
+                                is_transient = True
+                        except ImportError:
+                            pass
+
+                        if not is_transient:
+                            err_str = str(exc)
+                            if any(tok in err_str for tok in ("429", "500", "503", "ResourceExhausted", "quota", "UNAVAILABLE", "high demand")):
+                                is_transient = True
+
+                        if is_transient and attempt < max_retries:
+                            logger.warning(
+                                "Gemini API transient issue (%s) on %s model %s. Retrying in %.1fs (attempt %d/%d)...",
+                                exc,
+                                key_label,
+                                current_model,
+                                delay,
+                                attempt + 1,
+                                max_retries,
+                            )
+                            time.sleep(delay)
+                            delay *= 2.0
+                            continue
+
+                        logger.warning(
+                            "Attempt failed on %s (%s): %s. Moving to next failover candidate if available.",
+                            key_label,
+                            current_model,
+                            exc,
+                        )
+                        break
+
+            raise last_exc or RuntimeError("Exhausted all attempts in execute_with_retry")
 
         # 5. First Attempt
         try:

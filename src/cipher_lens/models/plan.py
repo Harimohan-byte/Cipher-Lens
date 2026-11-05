@@ -1,9 +1,9 @@
 """Execution plan and action class models."""
 
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ActionClass(str, Enum):
@@ -35,6 +35,15 @@ class PlanStep(BaseModel):
     expected_outcome: str
     nist_phase: Literal["planning", "discovery", "attack", "reporting"]
     idempotency_key: str | None = None
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def validate_params(cls, v: Any) -> dict:
+        if hasattr(v, "model_dump"):
+            return v.model_dump()
+        if isinstance(v, dict):
+            return v
+        return {}
 
 
 class AuthorizedStep(BaseModel):
