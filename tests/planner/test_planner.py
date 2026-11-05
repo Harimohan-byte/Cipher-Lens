@@ -292,6 +292,81 @@ def test_plan_next_steps_drops_invalid_triggered_by_id(
     assert len(proposal.steps) == 0
 
 
+def test_plan_next_steps_accepts_observation_and_finding_triggers(
+    policy_gate: PolicyGate, audit_log: AuditLog, test_db: sqlite3.Connection
+) -> None:
+    """Ensures observation IDs (obs-...) and finding IDs are accepted as valid evidence triggers."""
+    now = datetime.now(UTC)
+    ev = Evidence(
+        id="ev-obs-1",
+        source_tool="nmap",
+        run_id="run-001",
+        artifact_id="art-1",
+        locator="/port/80",
+        raw_sha256="abc",
+        snippet="80/tcp open http",
+        observed_at=now,
+        origin="live",
+    )
+    obs = Observation(
+        id="obs-VAPT-0002",
+        source_tool="nmap",
+        asset=Asset(host="10.0.0.5", ip="10.0.0.5", port=80, service="http"),
+        observation_type="service",
+        data={"port": 80, "service": "http"},
+        raw_evidence=ev,
+        observed_at=now,
+    )
+
+    def mock_backend(prompt: str, model: str, api_key: str) -> str:
+        return """{
+            "steps": [
+                {
+                    "step_id": "step-zap-obs",
+                    "tool": "zap",
+                    "target": "10.0.0.5",
+                    "params": {"port": 80},
+                    "rationale": "Spider discovered web port",
+                    "triggered_by": ["obs-VAPT-0002"],
+                    "expected_outcome": "Identify web vulnerabilities",
+                    "nist_phase": "discovery"
+                }
+            ],
+            "inferences": [],
+            "stop": false,
+            "stop_reason": null
+        }"""
+
+    client = LlmClient(
+        provider="mock",
+        primary_key="mock-key",
+        db_conn=test_db,
+        raw_completion_fn=mock_backend,
+    )
+
+    planner = AdaptivePlanner(
+        llm_client=client,
+        gate=policy_gate,
+        audit_log=audit_log,
+    )
+
+    state = StateSummary(
+        scope_target="10.0.0.5",
+        allowed_tools=["nmap", "nikto", "zap"],
+        observations=[obs],
+        findings=[],
+        done_steps=[],
+        failures=[],
+        remaining_budget=30,
+        evidence_ids=["scope"],
+    )
+
+    proposal = planner.plan_next_steps(state, assessment_id="asm-obs-001")
+    assert len(proposal.steps) == 1
+    assert proposal.steps[0].tool == "zap"
+    assert proposal.steps[0].triggered_by == ["obs-VAPT-0002"]
+
+
 def test_hostile_banner_injection_does_not_hijack_plan(
     policy_gate: PolicyGate, audit_log: AuditLog, test_db: sqlite3.Connection
 ) -> None:

@@ -10,6 +10,7 @@ Invariants:
 
 import hmac
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import streamlit as st
 
 from cipher_lens.config import get_settings
 from cipher_lens.models.plan import ActionClass
+from cipher_lens.policy.gate import parse_target
 from cipher_lens.policy.scope import Scope
 from cipher_lens.reports.assembly import ReportAssembler
 from cipher_lens.reports.generator import PdfReportGenerator
@@ -236,9 +238,36 @@ def render_scope_page(ctrl: UIController) -> None:
 
                 if submit_scope:
                     try:
-                        targets = [t.strip() for t in targets_input.splitlines() if t.strip()]
-                        exclusions = [e.strip() for e in exclusions_input.splitlines() if e.strip()]
+                        raw_targets = re.split(r"[,\n\r]+", targets_input)
+                        cleaned_targets: list[str] = []
                         ports = [int(p.strip()) for p in ports_input.split(",") if p.strip().isdigit()]
+                        for t in raw_targets:
+                            t_str = t.strip()
+                            if not t_str:
+                                continue
+                            if "/" in t_str and not t_str.startswith("http://") and not t_str.startswith("https://"):
+                                cleaned_targets.append(t_str)
+                            else:
+                                try:
+                                    pt = parse_target(t_str)
+                                    if pt.host:
+                                        cleaned_targets.append(pt.host)
+                                        if pt.port and pt.port not in ports:
+                                            ports.append(pt.port)
+                                    else:
+                                        cleaned_targets.append(t_str)
+                                except Exception:
+                                    cleaned_targets.append(t_str)
+
+                        # Deduplicate while preserving order
+                        seen_targets: set[str] = set()
+                        targets = []
+                        for ct in cleaned_targets:
+                            if ct not in seen_targets:
+                                seen_targets.add(ct)
+                                targets.append(ct)
+
+                        exclusions = [e.strip() for e in re.split(r"[,\n\r]+", exclusions_input) if e.strip()]
 
                         now = datetime.now(UTC)
                         new_scope = Scope(
@@ -386,6 +415,7 @@ def render_assessment_page(ctrl: UIController) -> None:
                         history=dialogue,
                         new_message=chat_input_val,
                         scope_id=getattr(curr_assm, "scope_id", None) if curr_assm else None,
+                        assessment_id=active_id,
                     )
                     st.markdown(reply_text)
                     dialogue.append({"role": "assistant", "content": reply_text})

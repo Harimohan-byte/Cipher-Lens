@@ -22,12 +22,13 @@ def rule_based_plan(state: StateSummary) -> PlanProposal:
     # Phase 1: Initial network discovery with Nmap
     nmap_key = f"nmap:{state.scope_target}:discovery"
     if "nmap" in allowed_tools and nmap_key not in done:
+        ports_str = ",".join(str(p) for p in sorted(state.allowed_ports)) if state.allowed_ports else "80,443"
         steps.append(
             ProposedStep(
                 step_id="step-rule-nmap-1",
                 tool="nmap",
                 target=state.scope_target,
-                params={"ports": "80,443"},
+                params={"ports": ports_str},
                 rationale="Initial network service discovery and port scan",
                 triggered_by=["scope"],
                 expected_outcome="Enumerate open ports and identify active services",

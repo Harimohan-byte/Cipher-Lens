@@ -40,3 +40,7 @@ Thumbs.db
 *.egg-info/
 build/
 dist/
+
+# Internal developer notes & private audits (never track or push to public repo)
+Markdown_for_self/
+PROBLEM-STATEMENT.pdf

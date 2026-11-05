@@ -90,6 +90,16 @@ class AssessmentRepository:
             (val, now, assessment_id),
         )
 
+    def update_assessment_target(
+        self, assessment_id: str, target: str
+    ) -> None:
+        """Updates the target host/IP for an assessment."""
+        now = datetime.now(UTC).isoformat()
+        self.conn.execute(
+            "UPDATE assessments SET target = ?, updated_at = ? WHERE id = ?",
+            (target, now, assessment_id),
+        )
+
     def list_assessments(
         self, status: AssessmentStatus | str | None = None
     ) -> list[Assessment]:

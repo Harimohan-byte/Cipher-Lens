@@ -198,6 +198,7 @@ class UIController:
         history: list[dict[str, str]],
         new_message: str,
         scope_id: str | None = None,
+        assessment_id: str | None = None,
     ) -> tuple[str, AssessmentRequest | None]:
         """Provides multi-turn conversational dialogue to clarify scope, targets, and objectives."""
         scope = self.get_scope(scope_id) if scope_id else None
@@ -207,6 +208,7 @@ class UIController:
             user_request=new_message,
             llm_client=self.llm_client,
             gate=self.policy_gate,
+            assessment_id=assessment_id,
         )
 
         if refused:
@@ -224,6 +226,9 @@ class UIController:
                 f"You can also specify scan depth (`quick`, `standard`, or `thorough`) and target services.",
                 req,
             )
+
+        if assessment_id and req.targets:
+            self.repository.update_assessment_target(assessment_id, req.targets[0])
 
         targets_str = ", ".join(req.targets)
         return (
@@ -274,6 +279,20 @@ class UIController:
         scope = self.get_scope(assm.scope_id) if assm.scope_id else None
         allowed_ports = scope.allowed_ports if scope and scope.allowed_ports else []
 
+        evidence_ids = (
+            ["scope"]
+            + [e.id for e in evidence_list]
+            + [obs.id for obs in obs_list]
+            + [f.id for f in findings]
+            + [f"obs-{f.id}" for f in findings]
+        )
+        seen_ids: set[str] = set()
+        deduped_evidence_ids: list[str] = []
+        for eid in evidence_ids:
+            if eid not in seen_ids:
+                seen_ids.add(eid)
+                deduped_evidence_ids.append(eid)
+
         state = StateSummary(
             scope_target=assm.target,
             allowed_tools=["nmap", "nikto", "zap"],
@@ -283,7 +302,7 @@ class UIController:
             done_steps=done_steps,
             failures=[],
             remaining_budget=30,
-            evidence_ids=["scope"] + [e.id for e in evidence_list],
+            evidence_ids=deduped_evidence_ids,
         )
 
         if self.chaos_manager.config.llm_down:

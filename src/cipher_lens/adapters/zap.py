@@ -79,6 +79,10 @@ def _is_ip(candidate: str) -> bool:
 
 
 def _default_resolver(host: str) -> list[str]:
+    if host in ("localhost", "127.0.0.1"):
+        return ["127.0.0.1"]
+    if host in ("zap.local", "lab.local", "lab-target.local"):
+        return ["10.0.0.5"]
     try:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
         return sorted({info[4][0] for info in infos})

@@ -124,7 +124,12 @@ class AdaptivePlanner:
         # 4. Authoritative Server-Side Validation
         validated_steps: list[ProposedStep] = []
         allowed_tools_lower = {t.lower() for t in state.allowed_tools}
-        known_evidence = set(state.evidence_ids)
+        known_evidence = (
+            set(state.evidence_ids)
+            | {obs.id for obs in state.observations}
+            | {f.id for f in state.findings}
+            | {f"obs-{f.id}" for f in state.findings}
+        )
 
         for step in raw_proposal.steps:
             if not step.target and state.scope_target:

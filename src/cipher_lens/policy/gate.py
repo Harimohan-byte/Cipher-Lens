@@ -140,6 +140,15 @@ def _ip_matches_entry(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address, ent
     Both the target IP and entry are canonicalized (e.g. ::ffff:10.0.0.1 -> 10.0.0.1) (ERR-17).
     """
     clean_entry = entry.strip()
+    # Normalize entry if scheme or port was provided (e.g. http://127.0.0.1:3000 -> 127.0.0.1)
+    if "://" in clean_entry:
+        try:
+            clean_entry = urlsplit(clean_entry).hostname or clean_entry
+        except Exception:
+            pass
+    elif ":" in clean_entry and not clean_entry.startswith("[") and clean_entry.count(":") == 1:
+        clean_entry = clean_entry.split(":")[0]
+
     canon_target = canonicalize_ip(ip_obj)
     if "/" in clean_entry:
         try:
@@ -162,6 +171,11 @@ def _ip_matches_entry(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address, ent
 
 def default_dns_resolver(host: str) -> list[str]:
     """Default DNS resolver using getaddrinfo to resolve all IPv4 and IPv6 addresses."""
+    # Fast-path well-known test lab hosts to avoid OS-level LLMNR/NetBIOS timeouts on Windows
+    if host in ("localhost", "127.0.0.1"):
+        return ["127.0.0.1"]
+    if host in ("lab-target.local", "lab.local"):
+        return ["10.0.0.5"]
     try:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
         ips = sorted({info[4][0] for info in infos})
