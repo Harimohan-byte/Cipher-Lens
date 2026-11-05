@@ -22,6 +22,8 @@ class ReportData(BaseModel):
     )
     evidence: list[Evidence] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    executive_summary: str = ""
+    executive_summary_badge: str = "[DETERMINISTIC FALLBACK]"
     audit_event_count: int = 0
     audit_head_hash: str = "genesis"
     audit_verified: bool = True

@@ -174,6 +174,7 @@ def render_sidebar(ctrl: UIController) -> str:
             "6. Executive PDF Report",
         ],
         index=0,
+        key="main_navigation_radio",
     )
 
     st.sidebar.markdown("---")
@@ -344,6 +345,52 @@ def render_assessment_page(ctrl: UIController) -> None:
             for ref_msg in st.session_state.last_refused:
                 st.markdown(f"- ❌ **Refused:** `{ref_msg}`")
             st.caption("Policy refusals are recorded as immutable audit events. Scans will strictly proceed on in-scope targets only.")
+
+        # Multi-Turn Conversational Dialogue & Clarification Assistant
+        st.markdown("---")
+        st.markdown("### 💬 Conversational Intake & Clarification Assistant")
+        st.caption("Converse with Cipher-Lens to clarify scope boundaries, refine target parameters, or ask assessment questions.")
+
+        hist_key = f"dialogue_history_{active_id}"
+        if hist_key not in st.session_state:
+            initial_msgs = []
+            if hasattr(st.session_state, "last_intake_req") and st.session_state.last_intake_req:
+                req_obj = st.session_state.last_intake_req
+                if req_obj.is_ambiguous and req_obj.clarifying_question:
+                    initial_msgs.append({
+                        "role": "assistant",
+                        "content": f"👋 **Clarification Needed:** {req_obj.clarifying_question}",
+                    })
+                elif req_obj.targets:
+                    initial_msgs.append({
+                        "role": "assistant",
+                        "content": f"👋 **Intake Initialized:** Target `{', '.join(req_obj.targets)}` identified with `{req_obj.depth}` depth. Feel free to ask questions, clarify targets, or proceed to plan generation.",
+                    })
+            st.session_state[hist_key] = initial_msgs
+
+        dialogue = st.session_state[hist_key]
+        for dmsg in dialogue:
+            with st.chat_message(dmsg["role"]):
+                st.markdown(dmsg["content"])
+
+        chat_input_val = st.chat_input("Ask a question, clarify target details, or adjust scope...", key=f"chat_{active_id}")
+        if chat_input_val:
+            dialogue.append({"role": "user", "content": chat_input_val})
+            with st.chat_message("user"):
+                st.markdown(chat_input_val)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Analyzing message against scope boundaries..."):
+                    curr_assm = ctrl.repository.get_assessment(active_id)
+                    reply_text, parsed_req = ctrl.converse_intake(
+                        history=dialogue,
+                        new_message=chat_input_val,
+                        scope_id=getattr(curr_assm, "scope_id", None) if curr_assm else None,
+                    )
+                    st.markdown(reply_text)
+                    dialogue.append({"role": "assistant", "content": reply_text})
+                    if parsed_req and not parsed_req.is_ambiguous and parsed_req.targets:
+                        st.session_state.last_intake_req = parsed_req
 
         # Plan Generation Section
         st.markdown("---")

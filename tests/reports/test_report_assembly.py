@@ -172,3 +172,34 @@ def test_executive_summary_is_deterministic_fallback(populated_controller):
     # Deterministic fallback label must be present
     assert "DETERMINISTIC FALLBACK" in summary
 
+
+def test_executive_summary_calls_llm_when_available(populated_controller):
+    """LLM client is invoked when available and sets AI-grounded label (AGENTS.md Rule 5)."""
+    from cipher_lens.planner.llm import LlmClient
+
+    called = []
+
+    def mock_backend(prompt: str, model: str, api_key: str) -> str:
+        called.append(prompt)
+        return '{"summary": "Security testing identified confirmed finding VAPT-0001 with high confidence."}'
+
+    mock_llm = LlmClient(
+        provider="mock",
+        primary_key="k1",
+        primary_model="gemini-3.5-flash-lite",
+        raw_completion_fn=mock_backend,
+    )
+    populated_controller.llm_client = mock_llm
+
+    assembler = ReportAssembler(populated_controller)
+    summary = assembler.generate_executive_summary("assm-100")
+
+    assert len(called) == 1
+    assert "AI-GENERATED · EVIDENCE-GROUNDED" in summary
+    assert "VAPT-0001" in summary
+
+    report_data = assembler.assemble_report("assm-100")
+    assert report_data.executive_summary_badge == "[AI-GENERATED · EVIDENCE-GROUNDED]"
+    assert "VAPT-0001" in report_data.executive_summary
+    assert "[DETERMINISTIC FALLBACK" not in report_data.executive_summary
+

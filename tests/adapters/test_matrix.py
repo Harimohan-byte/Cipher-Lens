@@ -77,6 +77,10 @@ def test_matrix_generates_markdown(monkeypatch):
     assert "| Status |" in md
     assert "nmap" in md
     assert "nikto" in md
+    assert "zap" in md
+    assert "burp_import" in md
+    assert "nessus_import" in md
+    assert "openvas_import" in md
     # Must be a proper markdown table (separator row)
     assert "|---" in md or "| ---" in md or "|:---" in md
 
@@ -90,7 +94,10 @@ def test_matrix_entries_have_required_fields(monkeypatch):
     from cipher_lens.adapters.matrix import build_matrix
 
     matrix = build_matrix()
-    assert len(matrix) >= 2, "Matrix must include at least nmap and nikto"
+    assert len(matrix) >= 6, "Matrix must include nmap, nikto, zap, and 3 report importers"
+
+    names = {e["name"] for e in matrix}
+    assert {"nmap", "nikto", "zap", "burp_import", "nessus_import", "openvas_import"}.issubset(names)
 
     for entry in matrix:
         assert "name" in entry

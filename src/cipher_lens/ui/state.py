@@ -24,6 +24,7 @@ from cipher_lens.correlate.risk import RiskScorer
 from cipher_lens.enrichment.service import EnrichmentService
 from cipher_lens.models.assessment import Assessment, AssessmentStatus
 from cipher_lens.models.findings import Finding
+from cipher_lens.models.observations import Observation
 from cipher_lens.models.plan import ActionClass, PlanStep
 from cipher_lens.orchestrator.chaos import ChaosConfig, ChaosManager
 from cipher_lens.orchestrator.engine import OrchestrationEngine
@@ -192,6 +193,57 @@ class UIController:
         self.repository.create_assessment(assm)
         return assm, req, refused
 
+    def converse_intake(
+        self,
+        history: list[dict[str, str]],
+        new_message: str,
+        scope_id: str | None = None,
+    ) -> tuple[str, AssessmentRequest | None]:
+        """Provides multi-turn conversational dialogue to clarify scope, targets, and objectives."""
+        scope = self.get_scope(scope_id) if scope_id else None
+        allowed_str = ", ".join(scope.allowed_targets) if scope else "Any authorized lab target"
+
+        req, refused = parse_intake(
+            user_request=new_message,
+            llm_client=self.llm_client,
+            gate=self.policy_gate,
+        )
+
+        if refused:
+            refusal_text = "; ".join(refused)
+            return (
+                f"⚠️ **Scope Boundary Warning:** I noticed target(s) outside our authorized scope: {refusal_text}. "
+                f"Per our Rules of Engagement, I can only assess targets within: `{allowed_str}`. "
+                f"Shall we proceed strictly with the authorized targets?",
+                req,
+            )
+
+        if req.is_ambiguous or not req.targets:
+            return (
+                f"I understand your goal. {req.clarifying_question or 'Could you please specify which target IP or host within authorized scope (' + allowed_str + ') you would like to test?'}\n\n"
+                f"You can also specify scan depth (`quick`, `standard`, or `thorough`) and target services.",
+                req,
+            )
+
+        targets_str = ", ".join(req.targets)
+        return (
+            f"✅ **Clarified Parameters:**\n"
+            f"- **Target(s):** `{targets_str}`\n"
+            f"- **Scan Depth:** `{req.depth}`\n"
+            f"- **Objectives:** {', '.join(req.objectives)}\n\n"
+            f"All specified targets are verified within authorized scope bounds (`{allowed_str}`). "
+            f"You can now click **Generate Adaptive Plan 🧠** to build the execution steps.",
+            req,
+        )
+
+    def record_observation(self, assessment_id: str, obs: Observation) -> None:
+        """Stores an observation in memory for the active assessment."""
+        if not hasattr(self, "_active_observations"):
+            self._active_observations: dict[str, list[Observation]] = {}
+        if assessment_id not in self._active_observations:
+            self._active_observations[assessment_id] = []
+        self._active_observations[assessment_id].append(obs)
+
     def generate_plan(self, assessment_id: str) -> PlanProposal:
         """Generates adaptive plan proposals for the current assessment state."""
         assm = self.repository.get_assessment(assessment_id)
@@ -203,10 +255,26 @@ class UIController:
         existing_steps = self.repository.get_steps(assessment_id)
         done_steps = [s.idempotency_key for s, _ in existing_steps if s.idempotency_key]
 
+        obs_list: list[Observation] = []
+        if hasattr(self, "_active_observations"):
+            obs_list.extend(self._active_observations.get(assessment_id, []))
+        for f in findings:
+            obs_list.append(
+                Observation(
+                    id=f"obs-{f.id}",
+                    source_tool=f.sources[0] if f.sources else "unknown",
+                    asset=f.asset,
+                    observation_type="service",
+                    data={"port": f.asset.port, "service": f.asset.service or "http"},
+                    raw_evidence=f.evidence[0] if f.evidence else None,
+                    observed_at=f.first_seen or datetime.now(UTC),
+                )
+            )
+
         state = StateSummary(
             scope_target=assm.target,
             allowed_tools=["nmap", "nikto", "zap"],
-            observations=[],
+            observations=obs_list,
             findings=findings,
             done_steps=done_steps,
             failures=[],

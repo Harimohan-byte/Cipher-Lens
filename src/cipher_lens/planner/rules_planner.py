@@ -10,7 +10,7 @@ Progression state machine:
 from cipher_lens.models.plan import ActionClass
 from cipher_lens.planner.models import PlanProposal, ProposedStep, StateSummary
 
-_WEB_PORTS = {80, 443, 8080, 8443, 8000, 8888, 9000, 9443}
+_WEB_PORTS = {80, 443, 3000, 5000, 8000, 8080, 8081, 8443, 8888, 9000, 9443}
 
 
 def rule_based_plan(state: StateSummary) -> PlanProposal:
@@ -51,6 +51,17 @@ def rule_based_plan(state: StateSummary) -> PlanProposal:
         service = (obs.asset.service or (obs.data.get("service") if isinstance(obs.data, dict) else "")).lower()
         ev_id = obs.raw_evidence.id if obs.raw_evidence and obs.raw_evidence.id in state.evidence_ids else "scope"
 
+        if port and (port in _WEB_PORTS or "http" in service):
+            try:
+                p_int = int(port)
+                discovered_web_ports.append((p_int, ev_id))
+            except (ValueError, TypeError):
+                continue
+
+    for f in state.findings:
+        port = f.asset.port
+        service = (f.asset.service or "").lower()
+        ev_id = f.evidence[0].id if f.evidence and f.evidence[0].id in state.evidence_ids else "scope"
         if port and (port in _WEB_PORTS or "http" in service):
             try:
                 p_int = int(port)

@@ -252,6 +252,15 @@ def build_report_flowables(data: ReportData) -> list[Any]:
     )
     flowables.append(Spacer(1, 8))
 
+    if data.executive_summary:
+        flowables.append(Paragraph("Executive Assessment Narrative", styles["h2"]))
+        for p_chunk in data.executive_summary.split("\n\n"):
+            p_clean = p_chunk.strip()
+            if p_clean:
+                flowables.append(Paragraph(p_clean, styles["body"]))
+                flowables.append(Spacer(1, 4))
+        flowables.append(Spacer(1, 6))
+
     crit_count = sum(1 for f in data.findings if (f.tool_severity or "").lower() == "critical")
     high_count = sum(1 for f in data.findings if (f.tool_severity or "").lower() == "high")
     med_count = sum(1 for f in data.findings if (f.tool_severity or "").lower() == "medium")
@@ -261,6 +270,7 @@ def build_report_flowables(data: ReportData) -> list[Any]:
         [Paragraph("<b>Authorized Window</b>", styles["body"]), Paragraph(data.testing_window, styles["body"])],
         [Paragraph("<b>Total Findings</b>", styles["body"]), Paragraph(str(len(data.findings)), styles["body"])],
         [Paragraph("<b>High / Critical Issues</b>", styles["body"]), Paragraph(f"{high_count} High, {crit_count} Critical, {med_count} Medium", styles["body"])],
+        [Paragraph("<b>Summary Provenance</b>", styles["body"]), Paragraph(data.executive_summary_badge, styles["body"])],
         [Paragraph("<b>Audit Status</b>", styles["body"]), Paragraph("Verified Cryptographic Hash Chain" if data.audit_verified else "Audit Verification Pending", styles["body"])],
     ]
     exec_table = Table(exec_summary_rows, colWidths=[140, 340])

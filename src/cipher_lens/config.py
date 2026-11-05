@@ -42,7 +42,7 @@ class Settings(BaseSettings):
         ),
     )
     gemini_model: str = Field(
-        default="gemini-3.5-flash",
+        default="gemini-3.5-flash-lite",
         validation_alias=AliasChoices(
             "GEMINI_MODEL",
             "GEMINI_MODEL_PRIMARY",
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
         ),
     )
     gemini_model_secondary: str = Field(
-        default="gemini-3.5-flash-lite",
+        default="gemini-3.1-flash-lite",
         validation_alias=AliasChoices(
             "GEMINI_MODEL_SECONDARY",
             "CIPHER_LENS_GEMINI_MODEL_SECONDARY",

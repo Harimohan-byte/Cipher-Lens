@@ -34,6 +34,38 @@ ADAPTER_REGISTRY: list[dict] = [
         "adapter_class": "NiktoAdapter",
         "profiles": ["web"],
     },
+    {
+        "name": "zap",
+        "binary": "zap",
+        "description": "OWASP Zed Attack Proxy (ZAP) daemon & REST API. "
+        "Supports web application spidering, passive inspection, and policy-governed active scanning.",
+        "adapter_class": "ZapAdapter",
+        "profiles": ["web", "spider", "active_scan"],
+    },
+    {
+        "name": "burp_import",
+        "binary": "burp",
+        "description": "PortSwigger Burp Suite XML issue export parser. "
+        "Safe defusedxml ingestion with entity protection and sensitive header/cookie redaction.",
+        "adapter_class": "BurpImporter",
+        "profiles": ["import", "web"],
+    },
+    {
+        "name": "nessus_import",
+        "binary": "nessus",
+        "description": "Tenable Nessus (.nessus / XML) report parser. "
+        "Extracts CVE findings, asset details, and maps vulnerability severities.",
+        "adapter_class": "NessusImporter",
+        "profiles": ["import", "infra"],
+    },
+    {
+        "name": "openvas_import",
+        "binary": "openvas",
+        "description": "OpenVAS / Greenbone Community XML export parser. "
+        "Ingests network and vulnerability scan results with scope validation.",
+        "adapter_class": "OpenvasImporter",
+        "profiles": ["import", "infra"],
+    },
 ]
 
 

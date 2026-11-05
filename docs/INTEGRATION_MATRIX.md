@@ -6,21 +6,30 @@
 | --- | --- | --- | --- | --- |
 | `nmap` | `nmap` | healthy/unavailable (runtime) | discovery, service, scripts | Network port scanner and service fingerprinter. Produces open-port observations and potential CVE findings via NSE scripts. |
 | `nikto` | `nikto` | healthy/unavailable (runtime) | web | Web server vulnerability scanner. Produces suspected-confidence findings. Alone, never yields confirmed status. |
+| `zap` | `zap` | healthy/unavailable (runtime) | web, spider, active_scan | OWASP Zed Attack Proxy (ZAP) daemon & REST API. Supports web application spidering, passive inspection, and policy-governed active scanning. |
+| `burp_import` | `burp` | healthy/unavailable (runtime) | import, web | PortSwigger Burp Suite XML issue export parser. Safe defusedxml ingestion with entity protection and sensitive header/cookie redaction. |
+| `nessus_import` | `nessus` | healthy/unavailable (runtime) | import, infra | Tenable Nessus (.nessus / XML) report parser. Extracts CVE findings, asset details, and maps vulnerability severities. |
+| `openvas_import` | `openvas` | healthy/unavailable (runtime) | import, infra | OpenVAS / Greenbone Community XML export parser. Ingests network and vulnerability scan results with scope validation. |
 
 > [!NOTE]
-> This file shows the static structure. Run `PYTHONPATH=src python -m cipher_lens.adapters.matrix` to regenerate with live binary detection.
+> This file shows the structural integration contract. Run `PYTHONPATH=src python -m cipher_lens.adapters.matrix` to regenerate with live binary detection.
 
 ## Adapter Safety Constraints
 
-| Adapter | Max Confidence | Can Confirm? | XML Parser | Shell Injection Guard |
+| Adapter | Max Confidence | Can Confirm? | XML / Payload Parser | Shell Injection Guard |
 | --- | --- | --- | --- | --- |
 | `nmap` | high (with NSE) | Yes (multi-tool corroboration required) | `defusedxml` | `NmapParams.validate_target` |
 | `nikto` | medium | **Never alone** | `defusedxml` | `NiktoParams.validate_target` |
+| `zap` | high (user confirmed) | Yes (spider + active scan policy gate) | `json.loads` (defused) | REST API (zero subprocess) |
+| `burp_import` | high | Yes (with cross-verification) | `defusedxml` | Import only (no execution) |
+| `nessus_import` | high | Yes (with cross-verification) | `defusedxml` | Import only (no execution) |
+| `openvas_import` | medium | No (requires corroboration) | `defusedxml` | Import only (no execution) |
 
 ## Notes
 
-- All adapters use `subprocess.run(shell=False)` with validated argv lists (AGENTS.md Rule 1).
+- All CLI adapters use `subprocess.run(shell=False)` with validated argv lists (AGENTS.md Rule 1).
 - All XML output is parsed with `defusedxml` to prevent XXE (AGENTS.md Rule 6).
 - Every tool run requires `policy.authorize()` (AGENTS.md Rule 2).
 - Nikto findings always have `confidence="medium"` — correlation layer decides promotion (AGENTS.md Rule 4).
+- Import adapters enforce maximum payload limits (50 MB) and scope host filtering before storing raw evidence (Rule 8).
 

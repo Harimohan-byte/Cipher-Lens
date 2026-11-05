@@ -363,8 +363,9 @@ def test_genai_non_stop_finish_reason_rejected():
 def test_plan_proposal_schema_zero_additional_properties():
     """Break-it test: PlanProposal schema must have zero additionalProperties to prevent Developer API errors."""
     import json
-    from cipher_lens.planner.models import PlanProposal
+
     from cipher_lens.planner.llm import _clean_schema_for_gemini
+    from cipher_lens.planner.models import PlanProposal
 
     schema_str = json.dumps(PlanProposal.model_json_schema())
     assert "additionalProperties" not in schema_str
@@ -397,9 +398,9 @@ def test_complete_json_failover_to_secondary_key(test_db_conn: sqlite3.Connectio
     client = LlmClient(
         provider="mock",
         primary_key="primary-key",
-        primary_model="gemini-3.8-flash",
+        primary_model="gemini-3.5-flash-lite",
         secondary_key="secondary-key",
-        secondary_model="gemini-3.5-flash-lite",
+        secondary_model="gemini-3.1-flash-lite",
         db_conn=test_db_conn,
         raw_completion_fn=mock_backend,
     )
@@ -412,7 +413,7 @@ def test_complete_json_failover_to_secondary_key(test_db_conn: sqlite3.Connectio
     )
 
     assert resp.label == "live"
-    assert resp.model == "gemini-3.5-flash-lite"
+    assert resp.model == "gemini-3.1-flash-lite"
     assert resp.data.action == "port_scan"
     assert any(k == "secondary-key" for _, k in call_log)
 

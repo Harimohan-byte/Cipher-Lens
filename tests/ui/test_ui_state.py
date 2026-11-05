@@ -119,6 +119,42 @@ def test_ui_intake_in_scope_and_refusals(ui_ctrl: UIController) -> None:
     assert "scope_refusal" in event_types
 
 
+def test_ui_converse_intake_multi_turn(ui_ctrl: UIController) -> None:
+    """Conversational intake handles ambiguity, clarifications, and scope boundaries (AGENTS.md Rule 2)."""
+    now = datetime.now(UTC)
+    scope = Scope(
+        id="scope-ui-conv",
+        name="Conversational Scope",
+        authorization_reference="AUTH-UI-CONV",
+        targets=["10.0.0.5"],
+        exclusions=["8.8.8.8"],
+        allowed_ports=[80, 443],
+        window_start=now - timedelta(hours=1),
+        window_end=now + timedelta(hours=12),
+    )
+    ui_ctrl.register_scope(scope)
+
+    history: list[dict[str, str]] = []
+    # Turn 1: Ambiguous request without targets
+    reply, req = ui_ctrl.converse_intake(history, "Can you do a quick scan for me?", scope_id="scope-ui-conv")
+    assert req is not None
+    assert req.is_ambiguous
+    assert "specify" in reply.lower() or "clarify" in reply.lower() or "target" in reply.lower()
+
+    # Turn 2: User specifies out-of-scope target
+    reply2, req2 = ui_ctrl.converse_intake(history, "Check 8.8.8.8 please", scope_id="scope-ui-conv")
+    assert "Scope Boundary Warning" in reply2
+    assert "8.8.8.8" in reply2
+
+    # Turn 3: User clarifies with in-scope target
+    reply3, req3 = ui_ctrl.converse_intake(history, "Let's test 10.0.0.5 thoroughly", scope_id="scope-ui-conv")
+    assert req3 is not None
+    assert not req3.is_ambiguous
+    assert "10.0.0.5" in req3.targets
+    assert "thorough" in req3.depth
+    assert "Clarified Parameters" in reply3
+
+
 def test_ui_plan_generation_and_approval(ui_ctrl: UIController) -> None:
     """Generating a plan creates proposed steps, and approving the plan records approval."""
     now = datetime.now(UTC)
