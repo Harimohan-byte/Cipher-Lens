@@ -540,3 +540,37 @@ async def test_dns_pinning_substitutes_target_ip(tmp_path: Path):
     assert "-host 10.0.0.5" in res_nikto.stdout
     assert "-vhost target.local" in res_nikto.stdout
 
+
+@pytest.mark.asyncio
+async def test_run_adapter_delegates_to_run_if_no_build_argv(tmp_path: Path):
+    """Verify ToolRunner.run_adapter safely gates and executes adapters with direct run() method."""
+    from cipher_lens.adapters.base import ExecutionContext, ExecutionResult
+
+    runner = _make_runner(tmp_path)
+
+    class DirectRunAdapter(BaseAdapter):
+        name = "nmap"
+        status = AdapterStatus.LIVE
+
+        async def healthcheck(self) -> HealthResult:
+            return HealthResult(status="healthy", message="ok")
+
+        async def run(self, step: PlanStep, ctx: ExecutionContext) -> ExecutionResult:
+            return ExecutionResult(
+                status="succeeded",
+                stdout="DIRECT RUN EXECUTED",
+                stderr="",
+                exit_code=0,
+                duration_seconds=0.1,
+            )
+
+        def parse(self, raw_bytes: bytes, evidence_meta: Evidence) -> list[Observation | RawFinding]:
+            return []
+
+    adapter = DirectRunAdapter()
+    step = _make_step(target="10.0.0.5", tool="nmap")
+
+    result = await runner.run_adapter(adapter=adapter, step=step, assessment_id="assess-runner")
+    assert result.status == "succeeded"
+    assert result.stdout == "DIRECT RUN EXECUTED"
+

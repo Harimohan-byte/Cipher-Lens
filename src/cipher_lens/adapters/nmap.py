@@ -82,10 +82,11 @@ def build_nmap_argv(
     Invariants:
     1. Never uses shell=True or string-formatted command lines.
     2. Enforces TCP connect scan (-sT) to avoid raw socket privileges.
-    3. Output is always emitted as XML (-oX -) for defusedxml parsing.
-    4. Throttling maps to --max-rate.
+    3. Adds -Pn to skip host discovery / ICMP ping probes for practice targets.
+    4. Output is always emitted as XML (-oX -) for defusedxml parsing.
+    5. Throttling maps to --max-rate.
     """
-    argv = [binary_path, "-sT", "-oX", "-"]
+    argv = [binary_path, "-sT", "-Pn", "-oX", "-"]
 
     if rate_limit is not None and rate_limit > 0:
         argv.extend(["--max-rate", str(rate_limit)])
@@ -285,13 +286,37 @@ class NmapAdapter(BaseAdapter):
             message="Nmap binary not found on PATH. Required for live scanning.",
         )
 
+    def build_argv(self, step: PlanStep) -> list[str]:
+        """Constructs safe argv list for step execution."""
+        from cipher_lens.policy.gate import parse_target
+
+        params_dict = dict(step.params)
+        raw_target = params_dict.get("target") or step.target
+        pt = parse_target(raw_target)
+        params_dict["target"] = pt.host
+        if pt.port and not params_dict.get("ports") and not params_dict.get("port"):
+            params_dict["ports"] = str(pt.port)
+        if "port" in params_dict and not params_dict.get("ports"):
+            params_dict["ports"] = str(params_dict["port"])
+        filtered = {k: v for k, v in params_dict.items() if k in NmapParams.model_fields}
+        params = NmapParams(**filtered)
+        return build_nmap_argv(params)
+
     async def run(self, step: PlanStep, ctx: ExecutionContext) -> ExecutionResult:
         """Executes Nmap safely with argv list, capturing raw output into ArtifactStore."""
+        from cipher_lens.policy.gate import parse_target
+
         # Validate parameters
         params_dict = dict(step.params)
-        if "target" not in params_dict:
-            params_dict["target"] = step.target
-        params = NmapParams(**params_dict)
+        raw_target = params_dict.get("target") or step.target
+        pt = parse_target(raw_target)
+        params_dict["target"] = pt.host
+        if pt.port and not params_dict.get("ports") and not params_dict.get("port"):
+            params_dict["ports"] = str(pt.port)
+        if "port" in params_dict and not params_dict.get("ports"):
+            params_dict["ports"] = str(params_dict["port"])
+        filtered = {k: v for k, v in params_dict.items() if k in NmapParams.model_fields}
+        params = NmapParams(**filtered)
 
         argv = build_nmap_argv(params, rate_limit=ctx.rate_limit)
 

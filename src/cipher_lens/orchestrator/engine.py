@@ -110,47 +110,74 @@ class OrchestrationEngine:
             return await asyncio.shield(self._inflight_tasks[idem_key])
 
         # 2. Check policy gate authorization
+        ports_to_check: list[int] = []
         raw_port = step.params.get("port")
-        parsed_port: int | None = None
-        if raw_port is not None:
+        if raw_port is not None and str(raw_port).strip().isdigit():
+            ports_to_check.append(int(raw_port))
+
+        raw_ports = step.params.get("ports")
+        if raw_ports and isinstance(raw_ports, str):
+            for p_str in raw_ports.split(","):
+                p_clean = p_str.strip()
+                if p_clean.isdigit():
+                    ports_to_check.append(int(p_clean))
+                elif "-" in p_clean:
+                    parts = p_clean.split("-", 1)
+                    if parts[0].strip().isdigit() and parts[1].strip().isdigit():
+                        ports_to_check.extend([int(parts[0].strip()), int(parts[1].strip())])
+
+        if not ports_to_check and ":" in step.target:
             try:
-                parsed_port = int(raw_port)
-            except (ValueError, TypeError):
-                err_msg = f"Invalid port specification: '{raw_port}'"
+                from cipher_lens.policy.gate import parse_target
+                pt = parse_target(step.target)
+                if pt.port:
+                    ports_to_check.append(pt.port)
+            except Exception:
+                pass
+
+        if ports_to_check:
+            for port in ports_to_check:
+                auth_decision = self.policy_gate.authorize(
+                    target=step.target,
+                    port=port,
+                    tool=step.tool,
+                    action_class=step.action_class,
+                    assessment_id=assessment_id,
+                )
+                if not auth_decision.allowed:
+                    self._emit(
+                        assessment_id,
+                        "step_rejected_by_policy",
+                        {"step_id": step_id, "reason": auth_decision.reason},
+                    )
+                    return ExecutionResult(
+                        status="failed",
+                        stdout="",
+                        stderr=f"Policy gate rejection: {auth_decision.reason}",
+                        exit_code=1,
+                        duration_seconds=0.0,
+                    )
+        else:
+            auth_decision = self.policy_gate.authorize(
+                target=step.target,
+                port=None,
+                tool=step.tool,
+                action_class=step.action_class,
+                assessment_id=assessment_id,
+            )
+            if not auth_decision.allowed:
                 self._emit(
                     assessment_id,
                     "step_rejected_by_policy",
-                    {"step_id": step_id, "reason": err_msg},
+                    {"step_id": step_id, "reason": auth_decision.reason},
                 )
                 return ExecutionResult(
                     status="failed",
                     stdout="",
-                    stderr=err_msg,
+                    stderr=f"Policy gate rejection: {auth_decision.reason}",
                     exit_code=1,
                     duration_seconds=0.0,
                 )
-
-        auth_decision = self.policy_gate.authorize(
-            target=step.target,
-            port=parsed_port,
-            tool=step.tool,
-            action_class=step.action_class,
-            assessment_id=assessment_id,
-        )
-
-        if not auth_decision.allowed:
-            self._emit(
-                assessment_id,
-                "step_rejected_by_policy",
-                {"step_id": step_id, "reason": auth_decision.reason},
-            )
-            return ExecutionResult(
-                status="failed",
-                stdout="",
-                stderr=f"Policy gate rejection: {auth_decision.reason}",
-                exit_code=1,
-                duration_seconds=0.0,
-            )
 
         # 3. Check approval requirement
         try:

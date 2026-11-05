@@ -269,3 +269,4 @@ Open `http://localhost:8501` in your browser. Log in as an **Operator** using to
 2. Navigate to **5. Audit Log & LLM Traces** and click **Verify Audit Trail Integrity** to confirm the SHA-256 chain is 100% intact.
 3. Navigate to **6. Executive PDF Report** and click **Generate Unified VAPT Report 📄**.
 4. Download the generated PDF report complete with executive summary, CVSS v3.1 scoring, and cryptographic evidence index.
+

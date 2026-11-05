@@ -199,8 +199,17 @@ class ToolRunner:
         port_int: int | None = None
         if isinstance(port, int):
             port_int = port
-        elif isinstance(port, str) and port.isdigit():
-            port_int = int(port)
+        elif isinstance(port, str):
+            p_val = port.split(",")[0].strip()
+            if p_val.isdigit():
+                port_int = int(p_val)
+        if port_int is None and ":" in step.target:
+            try:
+                pt = parse_target(step.target)
+                if pt.port:
+                    port_int = pt.port
+            except Exception:
+                pass
 
         decision = self.policy_gate.authorize(
             target=step.target,
@@ -423,6 +432,50 @@ class ToolRunner:
             )
 
         if not hasattr(adapter, "build_argv"):
+            if hasattr(adapter, "run"):
+                from cipher_lens.adapters.base import ExecutionContext
+
+                port = step.params.get("port") or step.params.get("ports")
+                port_int: int | None = None
+                if isinstance(port, int):
+                    port_int = port
+                elif isinstance(port, str):
+                    p_val = port.split(",")[0].strip()
+                    if p_val.isdigit():
+                        port_int = int(p_val)
+                if port_int is None and ":" in step.target:
+                    try:
+                        pt = parse_target(step.target)
+                        if pt.port:
+                            port_int = pt.port
+                    except Exception:
+                        pass
+
+                decision = self.policy_gate.authorize(
+                    target=step.target,
+                    port=port_int,
+                    tool=step.tool,
+                    action_class=step.action_class,
+                    assessment_id=assessment_id,
+                )
+                if not decision.allowed:
+                    raise PolicyDeniedError(
+                        f"Step '{step.step_id}' denied by policy gate: "
+                        f"{decision.reason} ({decision.rule_id})"
+                    )
+
+                self.approval_manager.require(step, assessment_id=assessment_id)
+
+                if self.rate_limiter is not None:
+                    await self.rate_limiter.throttle()
+
+                ctx = ExecutionContext(
+                    artifact_store=self.artifact_store,
+                    timeout_seconds=timeout_seconds or self.default_timeout,
+                    rate_limit=self.rate_limiter.rate_limit if self.rate_limiter else None,
+                )
+                return await adapter.run(step, ctx)
+
             raise ValueError(
                 f"Adapter '{adapter.name}' does not implement build_argv(step)"
             )

@@ -276,3 +276,44 @@ def test_nikto_adapter_run_mocked(tmp_path, monkeypatch):
 
     raw = store.read_raw(result.artifact_id)
     assert b"lab-target.local" in raw
+
+
+def test_nikto_adapter_build_argv():
+    """Verify NiktoAdapter.build_argv() correctly parses step target and ports."""
+    from cipher_lens.models.plan import ActionClass, PlanStep
+
+    adapter = NiktoAdapter()
+
+    # Case 1: Target host with ports in params
+    step1 = PlanStep(
+        step_id="step-nikto-build-1",
+        tool="nikto",
+        action_class=ActionClass.DISCOVERY,
+        target="127.0.0.1",
+        params={"ports": "3000"},
+        rationale="Web scan",
+        expected_outcome="HTTP findings",
+        nist_phase="discovery",
+    )
+    argv1 = adapter.build_argv(step1)
+    assert "-host" in argv1
+    assert argv1[argv1.index("-host") + 1] == "127.0.0.1"
+    assert "-port" in argv1
+    assert argv1[argv1.index("-port") + 1] == "3000"
+
+    # Case 2: URL target with embedded port
+    step2 = PlanStep(
+        step_id="step-nikto-build-2",
+        tool="nikto",
+        action_class=ActionClass.DISCOVERY,
+        target="http://127.0.0.1:3000",
+        params={},
+        rationale="Web scan",
+        expected_outcome="HTTP findings",
+        nist_phase="discovery",
+    )
+    argv2 = adapter.build_argv(step2)
+    assert "-host" in argv2
+    assert argv2[argv2.index("-host") + 1] == "127.0.0.1"
+    assert "-port" in argv2
+    assert argv2[argv2.index("-port") + 1] == "3000"
