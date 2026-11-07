@@ -1,0 +1,19 @@
+# Cipher-Lens Authorized Test Users & Role Registry
+# Defines default testing credentials and auto-bound roles.
+# Anyone cloning this repository can use these defaults or edit them for custom names/passwords.
+
+users:
+  - username: "Harimohan"
+    role: "lead_analyst"
+    display_role: "Lead Security Analyst"
+    password: "leadanalyst123"
+
+  - username: "Bhavyaa"
+    role: "operator"
+    display_role: "Operator / Pen-Tester"
+    password: "operator123"
+
+  - username: "Yash"
+    role: "auditor"
+    display_role: "Security Auditor"
+    password: "auditor123"

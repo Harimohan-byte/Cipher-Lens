@@ -8,7 +8,6 @@ Invariants:
 - AGENTS.md Rule 14: Dependencies flow downward: ui -> orchestrator -> policy/adapters/correlate -> store/models.
 """
 
-import hmac
 import os
 import re
 from datetime import UTC, datetime, timedelta
@@ -73,65 +72,74 @@ def get_current_user() -> dict[str, str] | None:
 def render_auth_barrier() -> bool:
     """Renders authentication barrier if session user is not authenticated (ERR-01).
 
-    Enforces token validation and role assignment (operator, lead_analyst, auditor).
+    Enforces configured test user credentials and automatic role binding
+    (Harimohan -> Lead Analyst, Bhavyaa -> Operator, Yash -> Auditor).
     """
     if st.session_state.get("authenticated_user"):
         return True
 
-    settings = get_settings()
+    from cipher_lens.ui.auth import get_user_by_name, load_user_registry, verify_user_credentials
 
     st.title("🛡️ Cipher-Lens Access Control")
     st.write(
-        "Authorized-Lab VAPT Assistant · Please authenticate with your role to enter the secure workspace."
+        "Authorized-Lab VAPT Assistant · Testing Authentication & Auto-Bound Role Registry."
     )
 
-    with st.form("auth_login_form"):
+    registry = load_user_registry()
+    profiles_summary = " · ".join(f"`{u['username']}` ({u['display_role']})" for u in registry.values())
+
+    with st.container(border=True):
         st.subheader("Session Authentication")
-        username = st.text_input("Username", value="", placeholder="e.g. alice, bob, auditor")
-        role = st.selectbox(
-            "Assigned Role",
-            options=["operator", "lead_analyst", "auditor"],
-            format_func=lambda r: {
-                "operator": "Operator / Pen-Tester (Scope & Scans)",
-                "lead_analyst": "Lead Security Analyst (Plan Approver)",
-                "auditor": "Security Auditor (Read-Only Findings & Logs)",
-            }.get(r, r),
-        )
-        token = st.text_input(
-            "Security Token / Password",
-            type="password",
-            help="Required if configured via environment variables (ADMIN_TOKEN / OPERATOR_TOKEN / AUDITOR_TOKEN)",
-        )
-        submit_btn = st.form_submit_button("Sign In 🔐", type="primary")
+        st.caption(f"Testing accounts: {profiles_summary}")
 
-        if submit_btn:
-            clean_user = username.strip()
-            if not clean_user:
-                st.error("Username cannot be empty.")
-                return False
+        with st.form("auth_login_form"):
+            username = st.text_input(
+                "Username",
+                value="",
+                placeholder="e.g. Harimohan, Bhavyaa, Yash",
+            )
 
-            required_token = None
-            if role == "lead_analyst":
-                required_token = settings.admin_token
-            elif role == "operator":
-                required_token = settings.operator_token or settings.admin_token
-            elif role == "auditor":
-                required_token = settings.auditor_token or settings.admin_token
+            # Auto-bound role resolution based on username
+            clean_name = username.strip()
+            configured_user = get_user_by_name(clean_name) if clean_name else None
 
-            if required_token:
-                if not token:
-                    st.error(f"Security token is required for role '{role}'.")
+            if configured_user:
+                st.info(f"🎭 **Assigned Role:** `{configured_user['display_role']}` *(Auto-assigned for {configured_user['username']} from config/users.yaml)*")
+                role = configured_user["role"]
+            else:
+                role = st.selectbox(
+                    "Assigned Role",
+                    options=["operator", "lead_analyst", "auditor"],
+                    format_func=lambda r: {
+                        "operator": "Operator / Pen-Tester (Scope & Scans)",
+                        "lead_analyst": "Lead Security Analyst (Plan Approver)",
+                        "auditor": "Security Auditor (Read-Only Findings & Logs)",
+                    }.get(r, r),
+                )
+
+            token = st.text_input(
+                "Security Token / Password",
+                type="password",
+                help="Configured in config/users.yaml (e.g. leadanalyst123, operator123, auditor123)",
+            )
+            submit_btn = st.form_submit_button("Sign In 🔐", type="primary")
+
+            if submit_btn:
+                user_dict, err_msg = verify_user_credentials(
+                    username=username,
+                    provided_password=token,
+                    selected_role=role,
+                    settings=get_settings(),
+                )
+
+                if err_msg:
+                    st.error(err_msg)
                     return False
-                if not hmac.compare_digest(token.encode("utf-8"), required_token.encode("utf-8")):
-                    st.error("Invalid security token.")
-                    return False
 
-            st.session_state["authenticated_user"] = {
-                "username": clean_user,
-                "role": role,
-            }
-            st.success(f"Authenticated as {clean_user} ({role})")
-            st.rerun()
+                if user_dict:
+                    st.session_state["authenticated_user"] = user_dict
+                    st.success(f"Authenticated as {user_dict['username']} ({user_dict['role']})")
+                    st.rerun()
 
     return False
 

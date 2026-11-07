@@ -71,3 +71,38 @@ def test_auth_barrier_successful_login(monkeypatch: pytest.MonkeyPatch):
             "username": "bob",
             "role": "lead_analyst",
         }
+
+
+def test_auth_predefined_users_auto_role():
+    """Verifies that predefined users from config/users.yaml have auto-assigned roles."""
+    from cipher_lens.ui.auth import get_user_by_name, verify_user_credentials
+
+    # Test Harimohan -> Lead Analyst
+    hari = get_user_by_name("Harimohan")
+    assert hari is not None
+    assert hari["role"] == "lead_analyst"
+    auth_hari, err = verify_user_credentials("Harimohan", "leadanalyst123")
+    assert auth_hari == {"username": "Harimohan", "role": "lead_analyst"}
+    assert err is None
+
+    # Test Bhavyaa -> Operator
+    bhavyaa = get_user_by_name("Bhavyaa")
+    assert bhavyaa is not None
+    assert bhavyaa["role"] == "operator"
+    auth_bhavyaa, err = verify_user_credentials("Bhavyaa", "operator123")
+    assert auth_bhavyaa == {"username": "Bhavyaa", "role": "operator"}
+    assert err is None
+
+    # Test Yash -> Auditor
+    yash = get_user_by_name("Yash")
+    assert yash is not None
+    assert yash["role"] == "auditor"
+    auth_yash, err = verify_user_credentials("Yash", "auditor123")
+    assert auth_yash == {"username": "Yash", "role": "auditor"}
+    assert err is None
+
+    # Test wrong password rejection
+    auth_fail, err_fail = verify_user_credentials("Harimohan", "incorrect_pwd")
+    assert auth_fail is None
+    assert "Invalid security token" in err_fail
+
