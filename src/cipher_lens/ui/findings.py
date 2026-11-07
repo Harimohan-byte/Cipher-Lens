@@ -102,32 +102,33 @@ def render_findings_view(ctrl: UIController, active_id: str) -> None:
         return
 
     # Filter & Sort Controls
-    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
-    with col_f1:
-        severities = st.multiselect(
-            "Filter Severity",
-            options=["critical", "high", "medium", "low", "info"],
-            default=[],
-        )
-    with col_f2:
-        statuses = st.multiselect(
-            "Filter Status",
-            options=["confirmed", "suspected", "false_positive", "accepted_risk"],
-            default=[],
-        )
-    with col_f3:
-        all_tools = sorted({ev.source_tool for f in findings for ev in f.evidence if ev.source_tool})
-        tools = st.multiselect(
-            "Filter Tool",
-            options=all_tools,
-            default=[],
-        )
-    with col_f4:
-        sort_choice = st.selectbox(
-            "Sort Order",
-            options=["Risk Score (High to Low)", "Risk Score (Low to High)", "Severity (High to Low)"],
-            index=0,
-        )
+    with st.container(border=True):
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+        with col_f1:
+            severities = st.multiselect(
+                "Filter Severity",
+                options=["critical", "high", "medium", "low", "info"],
+                default=[],
+            )
+        with col_f2:
+            statuses = st.multiselect(
+                "Filter Status",
+                options=["confirmed", "suspected", "false_positive", "accepted_risk"],
+                default=[],
+            )
+        with col_f3:
+            all_tools = sorted({ev.source_tool for f in findings for ev in f.evidence if ev.source_tool})
+            tools = st.multiselect(
+                "Filter Tool",
+                options=all_tools,
+                default=[],
+            )
+        with col_f4:
+            sort_choice = st.selectbox(
+                "Sort Order",
+                options=["Risk Score (High to Low)", "Risk Score (Low to High)", "Severity (High to Low)"],
+                index=0,
+            )
 
     sort_map = {
         "Risk Score (High to Low)": "risk_desc",
